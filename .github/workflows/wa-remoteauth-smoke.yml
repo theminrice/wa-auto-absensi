@@ -1,0 +1,120 @@
+name: WA RemoteAuth Smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wa-remoteauth-smoke
+  cancel-in-progress: false
+
+jobs:
+  remoteauth-smoke:
+    name: RemoteAuth restore smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Locate Chrome
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CHROME="$(
+            command -v google-chrome ||
+            command -v google-chrome-stable ||
+            command -v chromium ||
+            command -v chromium-browser ||
+            true
+          )"
+
+          if [ -z "$CHROME" ]; then
+            echo "CHROME_FOUND=NO"
+            exit 20
+          fi
+
+          echo "CHROME_FOUND=YES"
+          "$CHROME" --version
+
+          echo "CHROME_PATH=$CHROME" >> "$GITHUB_ENV"
+
+      - name: Safety guard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -Eq 'sendMessage[[:space:]]*\(' src/wa-remote-auth-smoke.js; then
+            echo "SMOKE_SOURCE_SEND_MESSAGE_CALL=FOUND"
+            exit 30
+          fi
+
+          if grep -Eq '@g\.us|WA_TARGET_GROUP_ID' src/wa-remote-auth-smoke.js; then
+            echo "SMOKE_SOURCE_GROUP_TARGET=FOUND"
+            exit 31
+          fi
+
+          echo "SMOKE_SOURCE_SEND_MESSAGE_CALL=NO"
+          echo "SMOKE_SOURCE_GROUP_TARGET=NO"
+          echo "SAFETY_GUARD=PASS"
+
+      - name: Restore RemoteAuth session
+        shell: bash
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          CHROME_PATH: ${{ env.CHROME_PATH }}
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth
+        run: |
+          set -euo pipefail
+
+          if [ -z "${MONGODB_URI:-}" ]; then
+            echo "MONGODB_URI_SECRET_AVAILABLE=NO"
+            exit 40
+          fi
+
+          echo "MONGODB_URI_SECRET_AVAILABLE=YES"
+          echo "MONGODB_URI_PRINTED=NO"
+
+          rm -rf "$WWEBJS_REMOTE_DATA_PATH"
+          mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
+
+          node src/wa-remote-auth-smoke.js | tee remoteauth-smoke.log
+
+          grep -q '^REMOTE_AUTH_SMOKE=PASS$' remoteauth-smoke.log
+          grep -q '^REMOTE_SESSION_RESTORE=PASS$' remoteauth-smoke.log
+          grep -q '^QR_REQUIRED=NO$' remoteauth-smoke.log
+          grep -q '^AUTHENTICATION_FROM_REMOTE_SESSION=PASS$' remoteauth-smoke.log
+          grep -q '^WHATSAPP_READY_FROM_REMOTE_SESSION=PASS$' remoteauth-smoke.log
+          grep -q '^MESSAGE_SENT=NO$' remoteauth-smoke.log
+
+          if grep -q '^QR_SEEN_FINAL=YES$' remoteauth-smoke.log; then
+            echo "CLOUD_QR_SEEN=YES"
+            exit 41
+          fi
+
+          echo "CLOUD_QR_SEEN=NO"
+          echo "CLOUD_REMOTEAUTH_SMOKE=PASS"
+
+      - name: Cleanup ephemeral state
+        if: always()
+        shell: bash
+        env:
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth
+        run: |
+          rm -rf "$WWEBJS_REMOTE_DATA_PATH"
+          rm -f remoteauth-smoke.log
+
+          echo "EPHEMERAL_STATE_REMOVED=YES"
