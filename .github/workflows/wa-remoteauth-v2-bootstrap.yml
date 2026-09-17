@@ -28,7 +28,6 @@ jobs:
       ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
       ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
       WA_BOOTSTRAP_EXPECTED_PROJECT: ${{ inputs.expected_project }}
-      WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth-v2
 
     steps:
       - name: Checkout repository
@@ -210,6 +209,8 @@ jobs:
 
       - name: Bootstrap RemoteAuth V2
         shell: bash
+        env:
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth-v2
         run: |
           set -euo pipefail
 
