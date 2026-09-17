@@ -1,0 +1,47 @@
+name: WA Auto Absensi - Safe Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Mode pengujian"
+        required: true
+        default: "dry-run"
+        type: choice
+        options:
+          - dry-run
+          - checkin
+          - checkout
+      project_text:
+        description: "Sementara untuk test. Contoh: p:Melanjutkan audit sekuritas backend"
+        required: true
+        default: "p:Melanjutkan audit sekuritas backend"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  safe-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    env:
+      TZ: Asia/Jakarta
+      MODE: ${{ inputs.mode }}
+      PROJECT_TEXT: ${{ inputs.project_text }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Safe dry run
+        run: npm run dry-run

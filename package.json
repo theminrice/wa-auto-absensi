@@ -1,0 +1,14 @@
+{
+  "name": "wa-auto-absensi",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Auto Check In / Check Out WhatsApp - tahap Testing",
+  "type": "commonjs",
+  "scripts": {
+    "dry-run": "node src/dry-run.js",
+    "test": "node src/test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
