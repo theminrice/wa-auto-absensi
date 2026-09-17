@@ -71,6 +71,191 @@ jobs:
           echo "SMOKE_SOURCE_GROUP_TARGET=NO"
           echo "SAFETY_GUARD=PASS"
 
+      # WA_AUTO_ABSENSI_ATLAS_DYNAMIC_IP_ADD_V1
+      - name: Add temporary Atlas runner IP
+        shell: bash
+        env:
+          ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+          ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+          ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+        run: |
+          set -Eeuo pipefail
+
+          : "${ATLAS_CLIENT_ID:?ATLAS_CLIENT_ID missing}"
+          : "${ATLAS_CLIENT_SECRET:?ATLAS_CLIENT_SECRET missing}"
+          : "${ATLAS_PROJECT_ID:?ATLAS_PROJECT_ID missing}"
+
+          API_ACCEPT="application/vnd.atlas.2025-03-12+json"
+
+          TOKEN_JSON="$(
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --request POST \
+              --url "https://cloud.mongodb.com/api/oauth/token" \
+              --user "${ATLAS_CLIENT_ID}:${ATLAS_CLIENT_SECRET}" \
+              --header "Accept: application/json" \
+              --header "Content-Type: application/x-www-form-urlencoded" \
+              --data "grant_type=client_credentials"
+          )"
+
+          ACCESS_TOKEN="$(
+            printf '%s' "$TOKEN_JSON" |
+              jq -r '.access_token // empty'
+          )"
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ATLAS_OAUTH=FAIL"
+            exit 30
+          fi
+
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "ATLAS_OAUTH=PASS"
+
+          RUNNER_IP="$(
+            curl \
+              -4 \
+              --fail \
+              --silent \
+              --show-error \
+              "https://api.ipify.org"
+          )"
+
+          python3 - "$RUNNER_IP" <<'PY'
+          import ipaddress
+          import sys
+
+          ip = ipaddress.ip_address(sys.argv[1].strip())
+
+          if ip.version != 4:
+              raise SystemExit("Runner public address is not IPv4")
+          PY
+
+          echo "::add-mask::$RUNNER_IP"
+
+          echo "ATLAS_RUNNER_IP=$RUNNER_IP" >> "$GITHUB_ENV"
+          echo "ATLAS_IP_CREATED=0" >> "$GITHUB_ENV"
+
+          BASE_URL="https://cloud.mongodb.com/api/atlas/v2/groups/${ATLAS_PROJECT_ID}/accessList"
+
+          CHECK_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --output atlas-existing.json \
+              --write-out "%{http_code}" \
+              --request GET \
+              --url "${BASE_URL}/${RUNNER_IP}" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: ${API_ACCEPT}"
+          )"
+
+          if [ "$CHECK_CODE" = "200" ]; then
+
+            echo "ATLAS_IP_PREEXISTING=YES"
+
+          elif [ "$CHECK_CODE" = "404" ]; then
+
+            echo "ATLAS_IP_PREEXISTING=NO"
+
+            DELETE_AFTER="$(
+              date -u \
+                -d '+30 minutes' \
+                '+%Y-%m-%dT%H:%M:%SZ'
+            )"
+
+            COMMENT="WA Auto Absensi RemoteAuth ${GITHUB_RUN_ID}"
+
+            PAYLOAD="$(
+              jq -nc \
+                --arg ip "$RUNNER_IP" \
+                --arg comment "$COMMENT" \
+                --arg deleteAfterDate "$DELETE_AFTER" \
+                '[{
+                  ipAddress: $ip,
+                  comment: $comment,
+                  deleteAfterDate: $deleteAfterDate
+                }]'
+            )"
+
+            ADD_CODE="$(
+              curl \
+                --silent \
+                --show-error \
+                --output atlas-add.json \
+                --write-out "%{http_code}" \
+                --request POST \
+                --url "$BASE_URL" \
+                --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+                --header "Accept: ${API_ACCEPT}" \
+                --header "Content-Type: application/json" \
+                --data "$PAYLOAD"
+            )"
+
+            if [ "$ADD_CODE" != "200" ] &&
+               [ "$ADD_CODE" != "201" ]; then
+
+              echo "ATLAS_IP_ADD=FAIL"
+              exit 31
+            fi
+
+            echo "ATLAS_IP_CREATED=1" >> "$GITHUB_ENV"
+
+            echo "ATLAS_IP_ADD=PASS"
+            echo "ATLAS_IP_TEMPORARY_EXPIRY=ENABLED"
+
+          else
+
+            echo "ATLAS_IP_PRECHECK_HTTP=${CHECK_CODE}"
+            echo "ATLAS_IP_PRECHECK=FAIL"
+            exit 32
+          fi
+
+          ACTIVE=0
+
+          for ATTEMPT in $(seq 1 24); do
+
+            STATUS_JSON="$(
+              curl \
+                --fail-with-body \
+                --silent \
+                --show-error \
+                --request GET \
+                --url "${BASE_URL}/${RUNNER_IP}/status" \
+                --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+                --header "Accept: ${API_ACCEPT}"
+            )"
+
+            STATUS="$(
+              printf '%s' "$STATUS_JSON" |
+                jq -r '.STATUS // .status // empty'
+            )"
+
+            echo "ATLAS_IP_STATUS=${STATUS:-UNKNOWN}"
+
+            if [ "$STATUS" = "ACTIVE" ]; then
+              ACTIVE=1
+              break
+            fi
+
+            if [ "$STATUS" = "FAILED" ]; then
+              echo "ATLAS_IP_ACTIVATION=FAIL"
+              exit 33
+            fi
+
+            sleep 5
+          done
+
+          if [ "$ACTIVE" != "1" ]; then
+            echo "ATLAS_IP_ACTIVATION=TIMEOUT"
+            exit 34
+          fi
+
+          rm -f atlas-existing.json atlas-add.json
+
+          echo "ATLAS_IP_ACTIVATION=PASS"
+          echo "ATLAS_DYNAMIC_IP_READY=YES"
       - name: Restore RemoteAuth session
         shell: bash
         env:
@@ -108,6 +293,98 @@ jobs:
           echo "CLOUD_QR_SEEN=NO"
           echo "CLOUD_REMOTEAUTH_SMOKE=PASS"
 
+      # WA_AUTO_ABSENSI_ATLAS_DYNAMIC_IP_CLEANUP_V1
+      - name: Remove temporary Atlas runner IP
+        if: always()
+        shell: bash
+        env:
+          ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+          ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+          ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+          ATLAS_RUNNER_IP: ${{ env.ATLAS_RUNNER_IP }}
+          ATLAS_IP_CREATED: ${{ env.ATLAS_IP_CREATED }}
+        run: |
+          set -Eeuo pipefail
+
+          if [ -z "${ATLAS_RUNNER_IP:-}" ]; then
+            echo "ATLAS_IP_CLEANUP=SKIPPED_NO_RUNNER_IP"
+            exit 0
+          fi
+
+          if [ "${ATLAS_IP_CREATED:-0}" != "1" ]; then
+            echo "ATLAS_IP_CLEANUP=SKIPPED_PREEXISTING"
+            exit 0
+          fi
+
+          API_ACCEPT="application/vnd.atlas.2025-03-12+json"
+
+          TOKEN_JSON="$(
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --request POST \
+              --url "https://cloud.mongodb.com/api/oauth/token" \
+              --user "${ATLAS_CLIENT_ID}:${ATLAS_CLIENT_SECRET}" \
+              --header "Accept: application/json" \
+              --header "Content-Type: application/x-www-form-urlencoded" \
+              --data "grant_type=client_credentials"
+          )"
+
+          ACCESS_TOKEN="$(
+            printf '%s' "$TOKEN_JSON" |
+              jq -r '.access_token // empty'
+          )"
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ATLAS_CLEANUP_OAUTH=FAIL"
+            exit 40
+          fi
+
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "::add-mask::$ATLAS_RUNNER_IP"
+
+          BASE_URL="https://cloud.mongodb.com/api/atlas/v2/groups/${ATLAS_PROJECT_ID}/accessList"
+
+          DELETE_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --request DELETE \
+              --url "${BASE_URL}/${ATLAS_RUNNER_IP}" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: ${API_ACCEPT}"
+          )"
+
+          if [ "$DELETE_CODE" != "204" ] &&
+             [ "$DELETE_CODE" != "404" ]; then
+
+            echo "ATLAS_IP_CLEANUP=FAIL"
+            echo "ATLAS_IP_CLEANUP_HTTP=${DELETE_CODE}"
+            exit 41
+          fi
+
+          VERIFY_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --request GET \
+              --url "${BASE_URL}/${ATLAS_RUNNER_IP}" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: ${API_ACCEPT}"
+          )"
+
+          if [ "$VERIFY_CODE" != "404" ]; then
+            echo "ATLAS_IP_CLEANUP_VERIFY=FAIL"
+            exit 42
+          fi
+
+          echo "ATLAS_IP_CLEANUP=PASS"
+          echo "ATLAS_IP_CLEANUP_VERIFY=PASS"
       - name: Cleanup ephemeral state
         if: always()
         shell: bash
