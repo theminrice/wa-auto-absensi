@@ -223,7 +223,17 @@ client.on('auth_failure', async msg => {
   await finish(client, 1);
 });
 
+let attendanceReadyStarted = false;
+
+// SIGASSPOL_READY_REENTRY_GUARD_V1
 client.on('ready', async () => {
+  if (attendanceReadyStarted) {
+    console.log('READY_REENTRY_IGNORED=YES');
+    return;
+  }
+
+  attendanceReadyStarted = true;
+
   console.log('WHATSAPP_READY=YES');
 
 // REMOTE_POST_READY_SETTLE_V1
