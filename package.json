@@ -17,7 +17,9 @@
     "node": ">=20"
   },
   "dependencies": {
+    "mongoose": "8.24.4",
     "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "https://codeload.github.com/cripperzprodigy/whatsapp-web.js/tar.gz/51914e67240b9c5fb63ef376ec94f1a10068bc75"
+    "whatsapp-web.js": "https://codeload.github.com/cripperzprodigy/whatsapp-web.js/tar.gz/51914e67240b9c5fb63ef376ec94f1a10068bc75",
+    "wwebjs-mongo": "1.1.0"
   }
 }
