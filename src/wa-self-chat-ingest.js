@@ -16,7 +16,7 @@ const {
   saveDocumentation
 } = require('./attendance-input-store');
 
-const CLIENT_ID = 'wa-auto-absensi';
+const CLIENT_ID = 'wa-auto-absensi-ingest';
 
 let client = null;
 let shuttingDown = false;
