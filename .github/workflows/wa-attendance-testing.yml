@@ -1,6 +1,12 @@
 name: WA Attendance Testing Cloud
 
 on:
+  schedule:
+    - cron: '0 6 * * 1-5'
+      timezone: 'Asia/Jakarta'
+    - cron: '0 17 * * 1-5'
+      timezone: 'Asia/Jakarta'
+
   workflow_dispatch:
     inputs:
       action:
@@ -68,11 +74,50 @@ jobs:
           echo "CHROME_PATH=$CHROME" >> "$GITHUB_ENV"
           echo "CHROME_FOUND=YES"
 
-      - name: Attendance Testing safety guard
+      - name: Resolve attendance trigger
         shell: bash
         env:
-          ATTENDANCE_ACTION: ${{ inputs.action }}
-          ATTENDANCE_CONFIRM: ${{ inputs.confirm }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          INPUT_ACTION: ${{ inputs.action }}
+          INPUT_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -Eeuo pipefail
+
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            case "$EVENT_SCHEDULE" in
+              "0 6 * * 1-5")
+                ACTION="checkin"
+                ;;
+              "0 17 * * 1-5")
+                ACTION="checkout"
+                ;;
+              *)
+                echo "UNKNOWN_SCHEDULE=YES"
+                exit 19
+                ;;
+            esac
+
+            CONFIRM="Testing"
+
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            ACTION="$INPUT_ACTION"
+            CONFIRM="$INPUT_CONFIRM"
+
+          else
+            echo "UNSUPPORTED_EVENT=$EVENT_NAME"
+            exit 20
+          fi
+
+          echo "ATTENDANCE_ACTION=$ACTION" >> "$GITHUB_ENV"
+          echo "ATTENDANCE_CONFIRM=$CONFIRM" >> "$GITHUB_ENV"
+
+          echo "ATTENDANCE_TRIGGER_RESOLVED=YES"
+          echo "ATTENDANCE_EVENT=$EVENT_NAME"
+          echo "ATTENDANCE_ACTION=$ACTION"
+
+      - name: Attendance Testing safety guard
+        shell: bash
         run: |
           set -Eeuo pipefail
 
@@ -330,7 +375,6 @@ jobs:
       - name: Run Testing attendance sender
         shell: bash
         env:
-          ATTENDANCE_ACTION: ${{ inputs.action }}
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           WA_TARGET_GROUP_ID: ${{ secrets.WA_TARGET_GROUP_ID }}
           WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth
@@ -378,8 +422,6 @@ jobs:
 
       - name: Verify Testing attendance result
         shell: bash
-        env:
-          ATTENDANCE_ACTION: ${{ inputs.action }}
         run: |
           set -Eeuo pipefail
 
