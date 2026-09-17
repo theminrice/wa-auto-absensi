@@ -5,6 +5,16 @@ const {
   MessageMedia
 } = require('whatsapp-web.js');
 
+const mongoose = require('mongoose');
+
+const {
+  REMOTE_AUTH_SESSION,
+  getRemoteAuthDataPath,
+  getPuppeteerOptions,
+  createMongoStore,
+  createRemoteAuth
+} = require('./remote-auth');
+
 const {
   normalizeProjectText,
   buildCheckOut
@@ -16,6 +26,10 @@ const {
 
 const EXPECTED_GROUP_NAME = 'Testing';
 const FETCH_LIMIT = 100;
+
+// WA_AUTO_ABSENSI_DUAL_AUTH_V1
+const useRemoteAuth =
+  Boolean(process.env.MONGODB_URI);
 
 function timeout(promise, ms, label) {
   let timer;
@@ -63,6 +77,19 @@ async function finish(client, code) {
     await client.destroy();
   } catch (_) {}
 
+  if (
+    useRemoteAuth &&
+    mongoose.connection.readyState !== 0
+  ) {
+    try {
+      await mongoose.disconnect();
+
+      console.log(
+        'MONGOOSE_DISCONNECTED=YES'
+      );
+    } catch (_) {}
+  }
+
   process.exit(code);
 }
 
@@ -89,21 +116,121 @@ if (!targetGroupId.endsWith('@g.us')) {
 console.log('TARGET_GROUP_ID_FOUND=YES');
 console.log(`TARGET_GROUP_ID_MASKED=${maskGroupId(targetGroupId)}`);
 
-const client = new Client({
-  authStrategy: new LocalAuth({
-    clientId: 'wa-auto-absensi'
-  }),
+async function main() {
+  let authStrategy;
+  let puppeteerOptions;
 
-  puppeteer: {
-    headless: true,
-    protocolTimeout: 120000
+  if (useRemoteAuth) {
+    const uri =
+      process.env.MONGODB_URI;
+
+    const dataPath =
+      getRemoteAuthDataPath();
+
+    await mongoose.connect(
+      uri,
+      {
+        dbName: 'wa_auto_absensi',
+        serverSelectionTimeoutMS: 15000
+      }
+    );
+
+    console.log(
+      'MONGODB_CONNECTED=YES'
+    );
+
+    const store =
+      createMongoStore(
+        mongoose,
+        dataPath
+      );
+
+    console.log(
+      'MONGO_STORE_READY=YES'
+    );
+
+    const remoteSessionExists =
+      await store.sessionExists({
+        session:
+          REMOTE_AUTH_SESSION
+      });
+
+    console.log(
+      `REMOTE_SESSION_EXISTS_BEFORE=${
+        remoteSessionExists ? 'YES' : 'NO'
+      }`
+    );
+
+    if (!remoteSessionExists) {
+      throw new Error(
+        'REMOTE_SESSION_MISSING'
+      );
+    }
+
+    authStrategy =
+      createRemoteAuth(
+        store,
+        dataPath
+      );
+
+    puppeteerOptions =
+      getPuppeteerOptions();
+
+    console.log(
+      'AUTH_MODE=REMOTE'
+    );
   }
-});
+  else {
+    authStrategy =
+      new LocalAuth({
+        clientId:
+          'wa-auto-absensi'
+      });
 
-client.on('qr', qr => {
-  console.log('QR_RECEIVED=YES');
-  qrcode.generate(qr, { small: true });
-});
+    puppeteerOptions = {
+      headless: true,
+      protocolTimeout: 120000
+    };
+
+    console.log(
+      'AUTH_MODE=LOCAL'
+    );
+  }
+
+  const client =
+    new Client({
+      authStrategy,
+      puppeteer:
+        puppeteerOptions
+    });
+
+  client.on('qr', async qr => {
+    console.log(
+      'QR_RECEIVED=YES'
+    );
+
+    if (useRemoteAuth) {
+      console.log(
+        'REMOTE_AUTH_QR_FORBIDDEN=YES'
+      );
+
+      console.log(
+        'MESSAGE_SENT=NO'
+      );
+
+      await finish(
+        client,
+        20
+      );
+
+      return;
+    }
+
+    qrcode.generate(
+      qr,
+      { small: true }
+    );
+  });
 
 client.on('authenticated', () => {
   console.log('AUTHENTICATED=YES');
@@ -440,5 +567,32 @@ client.on('ready', async () => {
 client.on('disconnected', reason => {
   console.log(`WHATSAPP_DISCONNECTED=${reason}`);
 });
+  await client.initialize();
+}
 
-client.initialize();
+main().catch(async error => {
+  console.error(
+    'SENDER_STARTUP_ERROR=YES'
+  );
+
+  console.error(error);
+
+  console.log(
+    'MESSAGE_SENT=NO'
+  );
+
+  if (
+    useRemoteAuth &&
+    mongoose.connection.readyState !== 0
+  ) {
+    try {
+      await mongoose.disconnect();
+
+      console.log(
+        'MONGOOSE_DISCONNECTED=YES'
+      );
+    } catch (_) {}
+  }
+
+  process.exit(1);
+});
