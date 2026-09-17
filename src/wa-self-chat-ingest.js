@@ -591,6 +591,118 @@ async function shutdown(reason) {
   }
 }
 
+
+// WA_AUTO_ABSENSI_CONFLICT_BUTTON_FIX_V1
+async function monitorWhatsAppConflictButton(client) {
+  const deadline =
+    Date.now() + 120000;
+
+  while (Date.now() < deadline) {
+    if (
+      client.info ||
+      !client.pupPage
+    ) {
+      if (client.info) {
+        return;
+      }
+
+      await new Promise(
+        resolve => setTimeout(resolve, 250)
+      );
+
+      continue;
+    }
+
+    try {
+      const result =
+        await client.pupPage.evaluate(() => {
+          const normalize =
+            value =>
+              String(value || '')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+          const dialog =
+            document.querySelector(
+              '[role="dialog"]'
+            );
+
+          if (!dialog) {
+            return {
+              dialog: false,
+              button: false,
+              clicked: false
+            };
+          }
+
+          const button =
+            Array.from(
+              dialog.querySelectorAll(
+                'button'
+              )
+            ).find(
+              element =>
+                normalize(
+                  element.innerText
+                ) === 'Gunakan di Sini'
+            );
+
+          if (!button) {
+            return {
+              dialog: true,
+              button: false,
+              clicked: false
+            };
+          }
+
+          button.click();
+
+          return {
+            dialog: true,
+            button: true,
+            clicked: true
+          };
+        });
+
+      if (result.clicked) {
+        console.log(
+          'WHATSAPP_CONFLICT_DIALOG=YES'
+        );
+
+        console.log(
+          'WHATSAPP_CONFLICT_BUTTON_CLICK=PASS'
+        );
+
+        return;
+      }
+    } catch (error) {
+      const message =
+        error &&
+        error.message
+          ? error.message
+          : String(error);
+
+      if (
+        !message.includes(
+          'Execution context was destroyed'
+        )
+      ) {
+        console.log(
+          `WHATSAPP_CONFLICT_MONITOR_ERROR=${message}`
+        );
+      }
+    }
+
+    await new Promise(
+      resolve => setTimeout(resolve, 500)
+    );
+  }
+
+  console.log(
+    'WHATSAPP_CONFLICT_DIALOG=NOT_OBSERVED'
+  );
+}
+
 async function main() {
   console.log(
     '============================================================'
@@ -751,7 +863,13 @@ async function main() {
     'WHATSAPP_INITIALIZE_START=YES'
   );
 
+
+const conflictMonitorPromise =
+    monitorWhatsAppConflictButton(client);
+
   await client.initialize();
+
+  await conflictMonitorPromise;
 
   console.log(
     'WHATSAPP_INITIALIZE_RESOLVED=YES'
