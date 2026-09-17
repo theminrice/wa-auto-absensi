@@ -544,7 +544,7 @@ async function main() {
     new RemoteAuth({
       clientId: CLIENT_ID,
       store,
-      backupSyncIntervalMs: 60000,
+      backupSyncIntervalMs: 600000,
       dataPath: DATA_PATH
     });
 
