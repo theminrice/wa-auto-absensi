@@ -1,4 +1,4 @@
-﻿function normalizeBody(value) {
+function normalizeBody(value) {
   return String(value || '')
     .replace(/\r\n/g, '\n')
     .trim();
@@ -24,6 +24,14 @@ async function findOutgoingDuplicate(
       normalizeBody(msg.body) === expected;
 
     if (!sameBody) {
+      return false;
+    }
+
+    // Hanya pesan yang minimal sudah diterima server
+    // yang boleh dianggap sebagai duplicate.
+    const ack = Number(msg.ack ?? 0);
+
+    if (ack < 1) {
       return false;
     }
 

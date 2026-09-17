@@ -246,10 +246,49 @@ client.on('ready', async () => {
       return await finish(client, 40);
     }
 
+    console.log(`ACK_INITIAL=${sent.ack}`);
+
+    const ackDeadline = Date.now() + 30000;
+    let ack = Number(sent.ack ?? 0);
+
+    while (Date.now() < ackDeadline && ack < 1) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      try {
+        const reloaded = await sent.reload();
+
+        if (!reloaded) {
+          console.log('MESSAGE_RELOAD=NULL');
+          continue;
+        }
+
+        ack = Number(sent.ack ?? 0);
+        console.log(`ACK_CURRENT=${ack}`);
+
+      } catch (error) {
+        console.log(`MESSAGE_RELOAD_ERROR=${error.message}`);
+      }
+    }
+
+    console.log(`ACK_FINAL=${ack}`);
+
+    if (ack < 1) {
+      console.log('SERVER_ACK_CONFIRMED=NO');
+      console.log('MESSAGE_SENT=NO');
+      console.log('STEP_4_1D_CHECKIN=FAIL');
+
+      await new Promise(resolve => setTimeout(resolve, 5000));
+
+      return await finish(client, 41);
+    }
+
+    console.log('SERVER_ACK_CONFIRMED=YES');
     console.log('MESSAGE_SENT=YES');
     console.log('TARGET_GROUP_CONFIRMED=Testing');
     console.log(`SENT_TIMESTAMP=${sent.timestamp || 'UNKNOWN'}`);
-    console.log('STEP_3_1=PASS');
+    console.log('STEP_4_1D_CHECKIN=PASS');
+
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
     await finish(client, 0);
 
