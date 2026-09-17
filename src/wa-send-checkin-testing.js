@@ -317,16 +317,163 @@ if (process.env.MONGODB_URI) {
 
     console.log('SELF_CHAT_FOUND=YES');
 
-    const messages = await timeout(
-      selfChat.fetchMessages({
-        limit: FETCH_LIMIT,
-        fromMe: true
-      }),
-      60000,
-      'FETCH_MESSAGES'
-    );
+    let messages;
 
-    console.log(`FETCHED_MESSAGE_COUNT=${messages.length}`);
+    // SELF_CHAT_FRESHNESS_GATE_V1
+    if (process.env.MONGODB_URI) {
+      const freshnessAttempts = 6;
+      const freshnessPollMs = 5000;
+
+      let refreshedSelfChat = selfChat;
+      let selfChatFresh = false;
+
+      console.log('SELF_CHAT_FRESHNESS_GATE=REMOTE');
+
+      for (
+        let attempt = 1;
+        attempt <= freshnessAttempts;
+        attempt += 1
+      ) {
+        console.log(
+          `SELF_CHAT_FRESHNESS_ATTEMPT=${attempt}`
+        );
+
+        try {
+          const syncResult = await timeout(
+            refreshedSelfChat.syncHistory(),
+            10000,
+            'SELF_CHAT_SYNC_HISTORY'
+          );
+
+          console.log(
+            `SELF_CHAT_SYNC_HISTORY_RESULT=${syncResult}`
+          );
+        } catch (error) {
+          const syncError =
+            error && error.message
+              ? error.message
+              : String(error);
+
+          console.log(
+            'SELF_CHAT_SYNC_HISTORY_RESULT=ERROR'
+          );
+
+          console.log(
+            `SELF_CHAT_SYNC_HISTORY_ERROR=${syncError}`
+          );
+        }
+
+        refreshedSelfChat = await timeout(
+          client.getChatById(selfId),
+          30000,
+          'SELF_CHAT_REFRESH'
+        );
+
+        if (!refreshedSelfChat) {
+          console.log(
+            'SELF_CHAT_REFRESH_FOUND=NO'
+          );
+
+          if (attempt < freshnessAttempts) {
+            await new Promise(resolve =>
+              setTimeout(resolve, freshnessPollMs)
+            );
+          }
+
+          continue;
+        }
+
+        console.log(
+          'SELF_CHAT_REFRESH_FOUND=YES'
+        );
+
+        messages = await timeout(
+          refreshedSelfChat.fetchMessages({
+            limit: FETCH_LIMIT,
+            fromMe: true
+          }),
+          60000,
+          'FETCH_MESSAGES'
+        );
+
+        const chatTimestamp =
+          Number(refreshedSelfChat.timestamp || 0);
+
+        const maxMessageTimestamp =
+          messages.reduce(
+            (maxTimestamp, msg) =>
+              Math.max(
+                maxTimestamp,
+                Number(msg.timestamp || 0)
+              ),
+            0
+          );
+
+        console.log(
+          `FETCHED_MESSAGE_COUNT=${messages.length}`
+        );
+
+        console.log(
+          `SELF_CHAT_TIMESTAMP=${chatTimestamp}`
+        );
+
+        console.log(
+          `SELF_CHAT_MAX_FETCHED_TIMESTAMP=${maxMessageTimestamp}`
+        );
+
+        if (
+          chatTimestamp > 0 &&
+          maxMessageTimestamp >= chatTimestamp
+        ) {
+          selfChatFresh = true;
+
+          console.log(
+            'SELF_CHAT_FRESHNESS=PASS'
+          );
+
+          break;
+        }
+
+        console.log(
+          'SELF_CHAT_FRESHNESS=STALE'
+        );
+
+        if (attempt < freshnessAttempts) {
+          await new Promise(resolve =>
+            setTimeout(resolve, freshnessPollMs)
+          );
+        }
+      }
+
+      if (!selfChatFresh) {
+        console.log(
+          'SELF_CHAT_FRESHNESS=FAIL'
+        );
+
+        console.log(
+          'REASON=SELF_CHAT_HISTORY_NOT_CAUGHT_UP'
+        );
+
+        console.log(
+          'MESSAGE_SENT=NO'
+        );
+
+        return await finish(client, 35);
+      }
+    } else {
+      messages = await timeout(
+        selfChat.fetchMessages({
+          limit: FETCH_LIMIT,
+          fromMe: true
+        }),
+        60000,
+        'FETCH_MESSAGES'
+      );
+
+      console.log(
+        `FETCHED_MESSAGE_COUNT=${messages.length}`
+      );
+    }
 
     const projects = messages
       .map(msg => ({
