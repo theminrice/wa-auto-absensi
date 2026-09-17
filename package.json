@@ -6,9 +6,18 @@
   "type": "commonjs",
   "scripts": {
     "dry-run": "node src/dry-run.js",
-    "test": "node src/test.js"
+    "test": "node src/test.js",
+    "wa:capture-testing": "node src/wa-capture-testing.js",
+    "wa:read-project": "node src/wa-read-project.js",
+    "wa:read-doc-image": "node src/wa-read-doc-image.js",
+    "wa:send-checkin-testing": "node src/wa-send-checkin-testing.js",
+    "wa:send-checkout-testing": "node src/wa-send-checkout-testing.js"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "https://codeload.github.com/cripperzprodigy/whatsapp-web.js/tar.gz/51914e67240b9c5fb63ef376ec94f1a10068bc75"
   }
 }
