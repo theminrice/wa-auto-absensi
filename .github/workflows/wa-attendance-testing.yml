@@ -327,7 +327,7 @@ jobs:
           echo "ATLAS_IP_ACTIVATION=PASS"
           echo "ATLAS_DYNAMIC_IP_READY=YES"
 
-- name: Run Testing attendance sender
+      - name: Run Testing attendance sender
         shell: bash
         env:
           ATTENDANCE_ACTION: ${{ inputs.action }}
@@ -541,7 +541,7 @@ jobs:
           echo "ATLAS_IP_CLEANUP=PASS"
           echo "ATLAS_IP_CLEANUP_VERIFY=PASS"
 
-- name: Cleanup attendance local state
+      - name: Cleanup attendance local state
         if: always()
         shell: bash
         run: |
