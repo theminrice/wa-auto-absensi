@@ -1,0 +1,284 @@
+name: WA RemoteAuth V2 Bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_project:
+        description: "Exact text after p: in WhatsApp self-chat"
+        required: true
+        default: "FINAL READY GUARD 4B0FC90"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wa-remoteauth-v2-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  bootstrap-v2:
+    name: RemoteAuth V2 Bootstrap
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+      ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+      ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+      WA_BOOTSTRAP_EXPECTED_PROJECT: ${{ inputs.expected_project }}
+      WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth-v2
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Locate Chrome
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CHROME_PATH="$(
+            command -v google-chrome ||
+            command -v google-chrome-stable ||
+            command -v chromium ||
+            command -v chromium-browser ||
+            true
+          )"
+
+          if [ -z "$CHROME_PATH" ]; then
+            echo "CHROME_NOT_FOUND=YES"
+            exit 1
+          fi
+
+          echo "CHROME_PATH=$CHROME_PATH" >> "$GITHUB_ENV"
+          echo "CHROME_FOUND=YES"
+
+      - name: Add temporary Atlas runner IP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for name in \
+            ATLAS_CLIENT_ID \
+            ATLAS_CLIENT_SECRET \
+            ATLAS_PROJECT_ID
+          do
+            if [ -z "${!name:-}" ]; then
+              echo "${name}_MISSING=YES"
+              exit 1
+            fi
+          done
+
+          RUNNER_IP="$(
+            curl -fsS https://api.ipify.org
+          )"
+
+          if ! [[ "$RUNNER_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            echo "RUNNER_IP_INVALID=YES"
+            exit 1
+          fi
+
+          TOKEN_JSON="$(
+            curl -fsS \
+              --request POST \
+              --url https://cloud.mongodb.com/api/oauth/token \
+              --user "${ATLAS_CLIENT_ID}:${ATLAS_CLIENT_SECRET}" \
+              --header "Accept: application/json" \
+              --header "Content-Type: application/x-www-form-urlencoded" \
+              --data "grant_type=client_credentials"
+          )"
+
+          ACCESS_TOKEN="$(
+            printf '%s' "$TOKEN_JSON" |
+              jq -r '.access_token // empty'
+          )"
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ATLAS_ACCESS_TOKEN_MISSING=YES"
+            exit 1
+          fi
+
+          API_BASE="https://cloud.mongodb.com/api/atlas/v2/groups/${ATLAS_PROJECT_ID}/accessList"
+
+          LIST_JSON="$(
+            curl -fsS \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: application/vnd.atlas.2025-03-12+json" \
+              "${API_BASE}?itemsPerPage=500"
+          )"
+
+          PREEXISTING="$(
+            printf '%s' "$LIST_JSON" |
+              jq \
+                --arg ip "$RUNNER_IP" \
+                '[
+                  .results[]?
+                  | select(
+                      .ipAddress == $ip
+                      or
+                      .cidrBlock == ($ip + "/32")
+                    )
+                ] | length'
+          )"
+
+          echo "ATLAS_RUNNER_IP=$RUNNER_IP" >> "$GITHUB_ENV"
+
+          if [ "$PREEXISTING" -gt 0 ]; then
+            echo "ATLAS_TEMP_CREATED=NO" >> "$GITHUB_ENV"
+            echo "ATLAS_RUNNER_IP_PREEXISTING=YES"
+          else
+            DELETE_AFTER="$(
+              date -u \
+                -d '+30 minutes' \
+                '+%Y-%m-%dT%H:%M:%SZ'
+            )"
+
+            COMMENT="wa-auto-absensi-v2-bootstrap-${GITHUB_RUN_ID}"
+
+            BODY="$(
+              jq -n \
+                --arg ip "$RUNNER_IP" \
+                --arg comment "$COMMENT" \
+                --arg deleteAfter "$DELETE_AFTER" \
+                '[
+                  {
+                    ipAddress: $ip,
+                    comment: $comment,
+                    deleteAfterDate: $deleteAfter
+                  }
+                ]'
+            )"
+
+            curl -fsS \
+              --request POST \
+              --url "$API_BASE" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: application/vnd.atlas.2025-03-12+json" \
+              --header "Content-Type: application/json" \
+              --data "$BODY" \
+              > /dev/null
+
+            echo "ATLAS_TEMP_CREATED=YES" >> "$GITHUB_ENV"
+            echo "ATLAS_TEMP_ENTRY_CREATED=YES"
+          fi
+
+          STATUS=""
+
+          for attempt in $(seq 1 18)
+          do
+            STATUS_JSON="$(
+              curl -fsS \
+                --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+                --header "Accept: application/vnd.atlas.2025-03-12+json" \
+                "${API_BASE}/${RUNNER_IP}/status" \
+                || true
+            )"
+
+            STATUS="$(
+              printf '%s' "$STATUS_JSON" |
+                jq -r '.status // empty' \
+                2>/dev/null \
+                || true
+            )"
+
+            echo "ATLAS_ACCESS_STATUS_ATTEMPT_${attempt}=${STATUS:-UNKNOWN}"
+
+            if [ "$STATUS" = "ACTIVE" ]; then
+              break
+            fi
+
+            sleep 5
+          done
+
+          if [ "$STATUS" != "ACTIVE" ]; then
+            echo "ATLAS_RUNNER_IP_ACTIVE=NO"
+            exit 1
+          fi
+
+          echo "ATLAS_RUNNER_IP_ACTIVE=YES"
+
+      - name: Bootstrap RemoteAuth V2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
+
+          echo "REMOTE_V2_BOOTSTRAP_START=YES"
+          echo "NO_WHATSAPP_MESSAGE_WILL_BE_SENT=YES"
+
+          node src/wa-remote-auth-v2-bootstrap.js
+
+      - name: Remove temporary Atlas runner IP
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          if [ "${ATLAS_TEMP_CREATED:-NO}" != "YES" ]; then
+            echo "ATLAS_TEMP_DELETE_SKIPPED=PREEXISTING_OR_NOT_CREATED"
+            exit 0
+          fi
+
+          if [ -z "${ATLAS_RUNNER_IP:-}" ]; then
+            echo "ATLAS_TEMP_DELETE_SKIPPED=IP_MISSING"
+            exit 0
+          fi
+
+          TOKEN_JSON="$(
+            curl -fsS \
+              --request POST \
+              --url https://cloud.mongodb.com/api/oauth/token \
+              --user "${ATLAS_CLIENT_ID}:${ATLAS_CLIENT_SECRET}" \
+              --header "Accept: application/json" \
+              --header "Content-Type: application/x-www-form-urlencoded" \
+              --data "grant_type=client_credentials"
+          )" || {
+            echo "ATLAS_CLEANUP_TOKEN_FAIL=YES"
+            exit 1
+          }
+
+          ACCESS_TOKEN="$(
+            printf '%s' "$TOKEN_JSON" |
+              jq -r '.access_token // empty'
+          )"
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ATLAS_CLEANUP_ACCESS_TOKEN_MISSING=YES"
+            exit 1
+          fi
+
+          API_URL="https://cloud.mongodb.com/api/atlas/v2/groups/${ATLAS_PROJECT_ID}/accessList/${ATLAS_RUNNER_IP}"
+
+          HTTP_CODE="$(
+            curl -sS \
+              --output /tmp/atlas-delete-response.json \
+              --write-out '%{http_code}' \
+              --request DELETE \
+              --url "$API_URL" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: application/vnd.atlas.2025-03-12+json"
+          )"
+
+          case "$HTTP_CODE" in
+            200|202|204|404)
+              echo "ATLAS_TEMP_ENTRY_REMOVED=YES"
+              ;;
+            *)
+              echo "ATLAS_TEMP_ENTRY_REMOVED=NO"
+              echo "ATLAS_DELETE_HTTP=$HTTP_CODE"
+              cat /tmp/atlas-delete-response.json || true
+              exit 1
+              ;;
+          esac
