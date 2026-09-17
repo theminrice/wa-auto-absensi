@@ -11,7 +11,8 @@
     "wa:read-project": "node src/wa-read-project.js",
     "wa:read-doc-image": "node src/wa-read-doc-image.js",
     "wa:send-checkin-testing": "node src/wa-send-checkin-testing.js",
-    "wa:send-checkout-testing": "node src/wa-send-checkout-testing.js"
+    "wa:send-checkout-testing": "node src/wa-send-checkout-testing.js",
+    "attendance:listen": "node src/wa-self-chat-ingest.js"
   },
   "engines": {
     "node": ">=20"
