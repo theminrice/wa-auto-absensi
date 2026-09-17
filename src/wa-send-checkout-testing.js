@@ -332,11 +332,157 @@ if (process.env.MONGODB_URI) {
 
     console.log('SELF_ID_FOUND=YES');
 
-    const selfChat = await timeout(
-      client.getChatById(selfId),
-      30000,
-      'SELF_CHAT_LOOKUP'
-    );
+    let selfChat = null;
+    let activeSelfChatId = selfId;
+
+    // SELF_CHAT_LID_RESOLVER_V1
+    if (
+      process.env.MONGODB_URI &&
+      typeof client.getContactLidAndPhone === 'function'
+    ) {
+      try {
+        const mappings = await timeout(
+          client.getContactLidAndPhone([selfId]),
+          30000,
+          'SELF_LID_LOOKUP'
+        );
+
+        const candidateIds = [selfId];
+
+        for (const mapping of mappings || []) {
+          const lid = mapping && mapping.lid;
+
+          if (
+            typeof lid === 'string' &&
+            lid.endsWith('@lid') &&
+            !candidateIds.includes(lid)
+          ) {
+            candidateIds.push(lid);
+          }
+        }
+
+        console.log(
+          `SELF_CHAT_ID_CANDIDATE_COUNT=${candidateIds.length}`
+        );
+
+        let selectedActivity = -1;
+
+        for (const candidateId of candidateIds) {
+          const candidateServer =
+            String(candidateId).split('@')[1] || 'unknown';
+
+          try {
+            const candidateChat = await timeout(
+              client.getChatById(candidateId),
+              30000,
+              'SELF_CHAT_CANDIDATE_LOOKUP'
+            );
+
+            if (!candidateChat) {
+              console.log(
+                `SELF_CHAT_CANDIDATE_${candidateServer}=NOT_FOUND`
+              );
+
+              continue;
+            }
+
+            const candidateMessages = await timeout(
+              candidateChat.fetchMessages({
+                limit: FETCH_LIMIT,
+                fromMe: true
+              }),
+              60000,
+              'SELF_CHAT_CANDIDATE_FETCH'
+            );
+
+            const chatTimestamp =
+              Number(candidateChat.timestamp || 0);
+
+            const maxMessageTimestamp =
+              candidateMessages.reduce(
+                (maxTimestamp, msg) =>
+                  Math.max(
+                    maxTimestamp,
+                    Number(msg.timestamp || 0)
+                  ),
+                0
+              );
+
+            const activity =
+              Math.max(
+                chatTimestamp,
+                maxMessageTimestamp
+              );
+
+            console.log(
+              `SELF_CHAT_CANDIDATE_SERVER=${candidateServer}`
+            );
+
+            console.log(
+              `SELF_CHAT_CANDIDATE_MESSAGE_COUNT=${candidateMessages.length}`
+            );
+
+            console.log(
+              `SELF_CHAT_CANDIDATE_ACTIVITY=${activity}`
+            );
+
+            if (activity > selectedActivity) {
+              selectedActivity = activity;
+              selfChat = candidateChat;
+              activeSelfChatId = candidateId;
+            }
+          } catch (error) {
+            const candidateError =
+              error && error.message
+                ? error.message
+                : String(error);
+
+            console.log(
+              `SELF_CHAT_CANDIDATE_${candidateServer}=ERROR`
+            );
+
+            console.log(
+              `SELF_CHAT_CANDIDATE_ERROR=${candidateError}`
+            );
+          }
+        }
+
+        if (selfChat) {
+          const selectedServer =
+            String(activeSelfChatId).split('@')[1] ||
+            'unknown';
+
+          console.log(
+            `SELF_CHAT_SELECTED_SERVER=${selectedServer}`
+          );
+
+          console.log(
+            `SELF_CHAT_SELECTED_ACTIVITY=${selectedActivity}`
+          );
+        }
+      } catch (error) {
+        const lidError =
+          error && error.message
+            ? error.message
+            : String(error);
+
+        console.log(
+          'SELF_LID_LOOKUP_RESULT=ERROR'
+        );
+
+        console.log(
+          `SELF_LID_LOOKUP_ERROR=${lidError}`
+        );
+      }
+    }
+
+    if (!selfChat) {
+      selfChat = await timeout(
+        client.getChatById(activeSelfChatId),
+        30000,
+        'SELF_CHAT_LOOKUP'
+      );
+    }
 
     if (!selfChat) {
       console.log('SELF_CHAT_FOUND=NO');
@@ -346,6 +492,13 @@ if (process.env.MONGODB_URI) {
     }
 
     console.log('SELF_CHAT_FOUND=YES');
+
+    console.log(
+      `SELF_CHAT_ACTIVE_SERVER=${
+        String(activeSelfChatId).split('@')[1] ||
+        'unknown'
+      }`
+    );
 
     let messages;
 
@@ -394,7 +547,7 @@ if (process.env.MONGODB_URI) {
         }
 
         refreshedSelfChat = await timeout(
-          client.getChatById(selfId),
+          client.getChatById(activeSelfChatId),
           30000,
           'SELF_CHAT_REFRESH'
         );
