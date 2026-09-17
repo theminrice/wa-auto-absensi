@@ -1,0 +1,61 @@
+﻿name: WA Auto Absensi CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify Node Project
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run project tests
+        run: npm test
+
+      - name: Verify WhatsApp dependencies load
+        run: |
+          node -e "require('whatsapp-web.js'); require('qrcode-terminal'); console.log('DEPENDENCY_REQUIRE=PASS')"
+
+      - name: Syntax check WhatsApp source
+        run: |
+          node --check src/attendance.js
+          node --check src/duplicate-guard.js
+          node --check src/wa-capture-testing.js
+          node --check src/wa-read-project.js
+          node --check src/wa-read-doc-image.js
+          node --check src/wa-send-checkin-testing.js
+          node --check src/wa-send-checkout-testing.js
+          echo "SOURCE_SYNTAX=PASS"
+
+      - name: Safe result
+        run: |
+          echo "============================================================"
+          echo "WA AUTO ABSENSI CI"
+          echo "NPM_CI=PASS"
+          echo "TESTS=PASS"
+          echo "DEPENDENCY_REQUIRE=PASS"
+          echo "SOURCE_SYNTAX=PASS"
+          echo "WHATSAPP_LOGIN=NO"
+          echo "MESSAGE_SENT=NO"
+          echo "STEP_4_1=PASS"
+          echo "============================================================"
