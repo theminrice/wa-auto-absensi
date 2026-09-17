@@ -226,6 +226,19 @@ client.on('auth_failure', async msg => {
 client.on('ready', async () => {
   console.log('WHATSAPP_READY=YES');
 
+// REMOTE_POST_READY_SETTLE_V1
+if (process.env.MONGODB_URI) {
+  const remoteSettleMs = 15000;
+
+  console.log(`REMOTE_POST_READY_SETTLE_MS=${remoteSettleMs}`);
+
+  await new Promise(resolve =>
+    setTimeout(resolve, remoteSettleMs)
+  );
+
+  console.log('REMOTE_POST_READY_SETTLE_DONE=YES');
+}
+
   try {
     console.log('TARGET_GROUP_VERIFY_START=YES');
 
