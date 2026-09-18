@@ -18,10 +18,6 @@ const {
 } = require('./attendance');
 
 const {
-  findOutgoingDuplicate
-} = require('./duplicate-guard');
-
-const {
   getLatestProject
 } = require('./attendance-input-store');
 
@@ -350,33 +346,9 @@ if (process.env.MONGODB_URI) {
     console.log('MESSAGE_PREVIEW_END');
     console.log('');
 
-    console.log('DUPLICATE_CHECK_START=YES');
-
-    const duplicate = await timeout(
-      findOutgoingDuplicate(
-        targetChat,
-        message,
-        {
-          limit: 100,
-          requireMedia: false
-        }
-      ),
-      60000,
-      'DUPLICATE_CHECK'
-    );
-
-    console.log(`DUPLICATE_CHECKED_COUNT=${duplicate.checked}`);
-
-    if (duplicate.found) {
-      console.log('DUPLICATE_FOUND=YES');
-      console.log('ACTION=SKIP');
-      console.log('MESSAGE_SENT=NO');
-      console.log('STEP_3_3_CHECKIN=PASS');
-
-      return await finish(client, 0);
-    }
-
-    console.log('DUPLICATE_FOUND=NO');
+    // WA_AUTO_ABSENSI_CHECKIN_NO_DUPLICATE_GUARD_V1
+    console.log('CHECKIN_DUPLICATE_GUARD=DISABLED');
+    console.log('ACTION=SEND');
     console.log('SEND_START=YES');
 
     const sent = await timeout(
