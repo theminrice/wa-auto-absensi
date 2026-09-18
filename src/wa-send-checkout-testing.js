@@ -1,4 +1,7 @@
 const qrcode = require('qrcode-terminal');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const {
   Client,
   LocalAuth,
@@ -16,7 +19,6 @@ const {
 } = require('./remote-auth');
 
 const {
-  normalizeProjectText,
   buildCheckOut
 } = require('./attendance');
 
@@ -24,8 +26,13 @@ const {
   findOutgoingDuplicate
 } = require('./duplicate-guard');
 
+const {
+  getLatestProject,
+  getLatestDocumentationAfter,
+  downloadDocumentation
+} = require('./attendance-input-store');
+
 const EXPECTED_GROUP_NAME = 'Testing';
-const FETCH_LIMIT = 100;
 
 // WA_AUTO_ABSENSI_DUAL_AUTH_V1
 const useRemoteAuth =
@@ -59,17 +66,1278 @@ function maskGroupId(id) {
   return `***${left.slice(-5)}@${suffix}`;
 }
 
-function isDocumentationImage(msg) {
-  if (!msg) return false;
 
-  const body = (msg.body || '').trim().toLowerCase();
-  const type = (msg.type || '').toLowerCase();
 
-  return (
-    msg.hasMedia === true &&
-    type === 'image' &&
-    body === 'p'
+// WA_AUTO_ABSENSI_CHECKOUT_UI_PHOTO_V1
+function normalizeUiText(value) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[\u200e\u200f]/g, '')
+    .trim();
+}
+
+function toWhatsAppBulletCaption(caption) {
+  return normalizeUiText(caption)
+    .split('\n')
+    .map(line =>
+      line.startsWith('- ')
+        ? `• ${line.slice(2)}`
+        : line
+    )
+    .join('\n');
+}
+
+function imageExtensionFromMime(mimetype) {
+  const raw =
+    String(mimetype || '')
+      .split(';')[0]
+      .trim()
+      .toLowerCase();
+
+  const subtype =
+    raw.startsWith('image/')
+      ? raw.slice(6)
+      : '';
+
+  const map = {
+    jpeg: 'jpg',
+    jpg: 'jpg',
+    png: 'png',
+    webp: 'webp',
+    gif: 'gif'
+  };
+
+  const extension =
+    map[subtype];
+
+  if (!extension) {
+    throw new Error(
+      `UNSUPPORTED_UI_PHOTO_MIMETYPE_${raw || 'UNKNOWN'}`
+    );
+  }
+
+  return extension;
+}
+
+function uiSleep(ms) {
+  return new Promise(
+    resolve =>
+      setTimeout(resolve, ms)
   );
+}
+
+async function isTestingUiActive(page) {
+  return await page.evaluate(() => {
+    const main =
+      document.querySelector('#main');
+
+    if (!main) {
+      return false;
+    }
+
+    const header =
+      main.querySelector('header');
+
+    if (!header) {
+      return false;
+    }
+
+    return (
+      header.innerText || ''
+    )
+      .split('\n')
+      .map(value => value.trim())
+      .includes('Testing');
+  });
+}
+
+async function waitTestingUiActive(
+  page,
+  timeoutMs
+) {
+  const deadline =
+    Date.now() + timeoutMs;
+
+  while (
+    Date.now() < deadline
+  ) {
+    if (
+      await isTestingUiActive(page)
+    ) {
+      return true;
+    }
+
+    await uiSleep(400);
+  }
+
+  return false;
+}
+
+async function clickTestingUiResult(page) {
+  const handles =
+    await page.$$(
+      '[title="Testing"]'
+    );
+
+  for (const handle of handles) {
+    try {
+      const info =
+        await handle.evaluate(el => {
+          const rect =
+            el.getBoundingClientRect();
+
+          return {
+            visible:
+              rect.width > 0 &&
+              rect.height > 0,
+
+            left:
+              rect.left
+          };
+        });
+
+      if (
+        info.visible &&
+        info.left < 650
+      ) {
+        await handle.click();
+
+        console.log(
+          'UI_TESTING_RESULT_CLICKED=YES'
+        );
+
+        return true;
+      }
+    } catch (_) {}
+  }
+
+  return false;
+}
+
+async function findTestingSearchBox(page) {
+  const handles =
+    await page.$$(
+      'div[contenteditable="true"],input'
+    );
+
+  for (const handle of handles) {
+    try {
+      const info =
+        await handle.evaluate(el => {
+          const rect =
+            el.getBoundingClientRect();
+
+          const style =
+            getComputedStyle(el);
+
+          const label =
+            (
+              (
+                el.getAttribute(
+                  'aria-label'
+                ) || ''
+              ) +
+              ' ' +
+              (
+                el.getAttribute(
+                  'placeholder'
+                ) || ''
+              ) +
+              ' ' +
+              (
+                el.getAttribute(
+                  'data-placeholder'
+                ) || ''
+              )
+            ).toLowerCase();
+
+          return {
+            visible:
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.display !== 'none' &&
+              style.visibility !== 'hidden',
+
+            left:
+              rect.left,
+
+            top:
+              rect.top,
+
+            label
+          };
+        });
+
+      if (
+        info.visible &&
+        info.left < 650 &&
+        info.top < 250 &&
+        (
+          info.label.includes(
+            'search'
+          ) ||
+          info.label.includes(
+            'cari'
+          )
+        )
+      ) {
+        return handle;
+      }
+    } catch (_) {}
+  }
+
+  return null;
+}
+
+async function openTestingUi(page) {
+  console.log(
+    'UI_OPEN_TESTING_START=YES'
+  );
+
+  await page.setViewport({
+    width: 1440,
+    height: 900
+  });
+
+  await page.bringToFront();
+
+  if (
+    await waitTestingUiActive(
+      page,
+      1500
+    )
+  ) {
+    console.log(
+      'UI_TESTING_ALREADY_ACTIVE=YES'
+    );
+
+    return;
+  }
+
+  if (
+    await clickTestingUiResult(page)
+  ) {
+    if (
+      await waitTestingUiActive(
+        page,
+        5000
+      )
+    ) {
+      console.log(
+        'UI_TESTING_CHAT_OPEN=YES'
+      );
+
+      return;
+    }
+  }
+
+  const search =
+    await findTestingSearchBox(page);
+
+  if (!search) {
+    throw new Error(
+      'UI_SEARCH_BOX_NOT_FOUND'
+    );
+  }
+
+  await search.focus();
+
+  await page.keyboard.down(
+    'Control'
+  );
+
+  await page.keyboard.press(
+    'A'
+  );
+
+  await page.keyboard.up(
+    'Control'
+  );
+
+  await page.keyboard.press(
+    'Backspace'
+  );
+
+  await page.keyboard.type(
+    'Testing',
+    {
+      delay: 2
+    }
+  );
+
+  console.log(
+    'UI_SEARCH_TESTING_TYPED=YES'
+  );
+
+  await uiSleep(2500);
+
+  if (
+    !await clickTestingUiResult(page)
+  ) {
+    throw new Error(
+      'UI_TESTING_RESULT_NOT_FOUND'
+    );
+  }
+
+  if (
+    !await waitTestingUiActive(
+      page,
+      7000
+    )
+  ) {
+    throw new Error(
+      'UI_TESTING_NOT_ACTIVE'
+    );
+  }
+
+  console.log(
+    'UI_TESTING_CHAT_OPEN=YES'
+  );
+}
+
+async function findAttachmentUi(page) {
+  const handles =
+    await page.$$(
+      'button,[role="button"]'
+    );
+
+  for (const handle of handles) {
+    try {
+      const info =
+        await handle.evaluate(el => {
+          const rect =
+            el.getBoundingClientRect();
+
+          const style =
+            getComputedStyle(el);
+
+          const aria =
+            el.getAttribute(
+              'aria-label'
+            ) || '';
+
+          const title =
+            el.getAttribute(
+              'title'
+            ) || '';
+
+          const text =
+            (el.innerText || '')
+              .trim();
+
+          return {
+            visible:
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.display !== 'none' &&
+              style.visibility !== 'hidden',
+
+            aria,
+            title,
+            text,
+
+            inFooter:
+              Boolean(
+                el.closest(
+                  'footer'
+                )
+              )
+          };
+        });
+
+      const haystack =
+        (
+          info.aria +
+          ' ' +
+          info.title +
+          ' ' +
+          info.text
+        ).toLowerCase();
+
+      if (
+        info.visible &&
+        info.inFooter &&
+        (
+          haystack.includes(
+            'lampir'
+          ) ||
+          haystack.includes(
+            'attach'
+          )
+        )
+      ) {
+        return handle;
+      }
+    } catch (_) {}
+  }
+
+  return null;
+}
+
+async function findPhotoVideoMenuUi(page) {
+  for (
+    let attempt = 1;
+    attempt <= 30;
+    attempt++
+  ) {
+    const handles =
+      await page.$$(
+        '[role="menuitem"],button,[role="button"]'
+      );
+
+    for (const handle of handles) {
+      try {
+        const info =
+          await handle.evaluate(el => {
+            const rect =
+              el.getBoundingClientRect();
+
+            const style =
+              getComputedStyle(el);
+
+            return {
+              visible:
+                rect.width > 0 &&
+                rect.height > 0 &&
+                style.display !== 'none' &&
+                style.visibility !== 'hidden',
+
+              aria:
+                el.getAttribute(
+                  'aria-label'
+                ) || '',
+
+              text:
+                (el.innerText || '')
+                  .replace(
+                    /\s+/g,
+                    ' '
+                  )
+                  .trim()
+            };
+          });
+
+        if (!info.visible) {
+          continue;
+        }
+
+        const aria =
+          info.aria
+            .toLowerCase();
+
+        const text =
+          info.text
+            .toLowerCase();
+
+        if (
+          aria.includes(
+            'foto & video'
+          ) ||
+          text ===
+            'foto & video' ||
+          aria.includes(
+            'photos & videos'
+          ) ||
+          text ===
+            'photos & videos' ||
+          aria.includes(
+            'photo & video'
+          ) ||
+          text ===
+            'photo & video'
+        ) {
+          return handle;
+        }
+      } catch (_) {}
+    }
+
+    await uiSleep(300);
+  }
+
+  return null;
+}
+
+async function selectPhotoVideoUi(
+  page,
+  filePath
+) {
+  const attachment =
+    await findAttachmentUi(page);
+
+  if (!attachment) {
+    throw new Error(
+      'UI_ATTACHMENT_TRIGGER_NOT_FOUND'
+    );
+  }
+
+  await attachment.click();
+
+  console.log(
+    'UI_ATTACHMENT_MENU_OPENED=YES'
+  );
+
+  const photoVideo =
+    await findPhotoVideoMenuUi(
+      page
+    );
+
+  if (!photoVideo) {
+    throw new Error(
+      'UI_PHOTO_VIDEO_MENU_NOT_FOUND'
+    );
+  }
+
+  console.log(
+    'UI_PHOTO_VIDEO_MENU_FOUND=YES'
+  );
+
+  const chooserPromise =
+    page.waitForFileChooser({
+      timeout: 8000
+    });
+
+  await photoVideo.click();
+
+  console.log(
+    'UI_PHOTO_VIDEO_MENU_CLICKED=YES'
+  );
+
+  const chooser =
+    await chooserPromise;
+
+  console.log(
+    'UI_PHOTO_VIDEO_FILE_CHOOSER_FOUND=YES'
+  );
+
+  await chooser.accept([
+    filePath
+  ]);
+
+  console.log(
+    'UI_PHOTO_VIDEO_FILE_SELECTED=YES'
+  );
+}
+
+async function getPhotoPreviewUiState(page) {
+  return await page.evaluate(() => {
+    const visible =
+      el => {
+        if (!el) {
+          return false;
+        }
+
+        const rect =
+          el.getBoundingClientRect();
+
+        const style =
+          getComputedStyle(el);
+
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden'
+        );
+      };
+
+    const bodyText =
+      document.body
+        ? document.body.innerText || ''
+        : '';
+
+    const captionBoxes =
+      Array.from(
+        document.querySelectorAll(
+          '[contenteditable="true"][role="textbox"]'
+        )
+      )
+        .filter(el => {
+          if (
+            !visible(el) ||
+            el.closest('footer')
+          ) {
+            return false;
+          }
+
+          const aria =
+            (
+              el.getAttribute(
+                'aria-label'
+              ) || ''
+            ).toLowerCase();
+
+          return (
+            aria ===
+              'ketik pesan' ||
+            aria ===
+              'type a message'
+          );
+        })
+        .map(el => {
+          const rect =
+            el.getBoundingClientRect();
+
+          return {
+            aria:
+              el.getAttribute(
+                'aria-label'
+              ) || '',
+
+            text:
+              el.innerText || '',
+
+            x:
+              Math.round(rect.x),
+
+            y:
+              Math.round(rect.y),
+
+            width:
+              Math.round(rect.width),
+
+            height:
+              Math.round(rect.height)
+          };
+        });
+
+    const sendButtons =
+      Array.from(
+        document.querySelectorAll(
+          '[role="button"][aria-label]'
+        )
+      )
+        .filter(el => {
+          if (!visible(el)) {
+            return false;
+          }
+
+          const aria =
+            (
+              el.getAttribute(
+                'aria-label'
+              ) || ''
+            ).toLowerCase();
+
+          return (
+            (
+              aria.includes(
+                'kirim'
+              ) &&
+              aria.includes(
+                'dipilih'
+              )
+            ) ||
+            (
+              aria.includes(
+                'send'
+              ) &&
+              aria.includes(
+                'selected'
+              )
+            )
+          );
+        })
+        .map(el =>
+          el.getAttribute(
+            'aria-label'
+          ) || ''
+        );
+
+    const largeImages =
+      Array.from(
+        document.querySelectorAll(
+          'img'
+        )
+      )
+        .filter(visible)
+        .filter(el => {
+          const rect =
+            el.getBoundingClientRect();
+
+          return (
+            rect.width >= 300 &&
+            rect.height >= 200
+          );
+        });
+
+    return {
+      stickerMaker:
+        bodyText.includes(
+          'WhatsApp Sticker Maker'
+        ),
+
+      captionBoxCount:
+        captionBoxes.length,
+
+      captionBoxes,
+
+      sendCount:
+        sendButtons.length,
+
+      sendLabels:
+        sendButtons,
+
+      largeImageCount:
+        largeImages.length
+    };
+  });
+}
+
+async function waitPhotoPreviewUi(page) {
+  for (
+    let attempt = 1;
+    attempt <= 40;
+    attempt++
+  ) {
+    const state =
+      await getPhotoPreviewUiState(
+        page
+      );
+
+    if (
+      attempt === 1 ||
+      attempt % 5 === 0
+    ) {
+      console.log(
+        `UI_PHOTO_PREVIEW_ATTEMPT=${attempt}`
+      );
+
+      console.log(
+        'UI_PHOTO_PREVIEW_STATE=' +
+        JSON.stringify(state)
+      );
+    }
+
+    if (
+      state.stickerMaker === false &&
+      state.captionBoxCount === 1 &&
+      state.sendCount === 1 &&
+      state.largeImageCount >= 1
+    ) {
+      console.log(
+        'UI_PHOTO_VIDEO_PATH_CONFIRMED=YES'
+      );
+
+      console.log(
+        'UI_REAL_MEDIA_CAPTION_BOX_CONFIRMED=YES'
+      );
+
+      return state;
+    }
+
+    await uiSleep(500);
+  }
+
+  throw new Error(
+    'UI_PHOTO_PREVIEW_NOT_CONFIRMED'
+  );
+}
+
+async function getRealMediaCaptionBoxUi(page) {
+  const boxes =
+    await page.$$(
+      '[contenteditable="true"][role="textbox"]'
+    );
+
+  const valid = [];
+
+  for (const box of boxes) {
+    try {
+      const info =
+        await box.evaluate(el => {
+          const rect =
+            el.getBoundingClientRect();
+
+          const style =
+            getComputedStyle(el);
+
+          const aria =
+            (
+              el.getAttribute(
+                'aria-label'
+              ) || ''
+            ).toLowerCase();
+
+          return {
+            visible:
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.display !== 'none' &&
+              style.visibility !== 'hidden',
+
+            inFooter:
+              Boolean(
+                el.closest(
+                  'footer'
+                )
+              ),
+
+            aria
+          };
+        });
+
+      if (
+        info.visible &&
+        info.inFooter === false &&
+        (
+          info.aria ===
+            'ketik pesan' ||
+          info.aria ===
+            'type a message'
+        )
+      ) {
+        valid.push(box);
+      }
+    } catch (_) {}
+  }
+
+  if (
+    valid.length !== 1
+  ) {
+    throw new Error(
+      'UI_REAL_MEDIA_CAPTION_BOX_NOT_UNIQUE'
+    );
+  }
+
+  return valid[0];
+}
+
+async function insertMediaCaptionUi(
+  page,
+  finalCaption
+) {
+  const box =
+    await getRealMediaCaptionBoxUi(
+      page
+    );
+
+  const lines =
+    finalCaption.split('\n');
+
+  const bullets =
+    lines.filter(
+      line =>
+        line.startsWith('• ')
+    );
+
+  if (
+    lines.length !== 7 ||
+    lines[1] !== '' ||
+    bullets.length !== 5
+  ) {
+    throw new Error(
+      'UI_CAPTION_STRUCTURE_INVALID'
+    );
+  }
+
+  await box.focus();
+
+  await page.keyboard.down(
+    'Control'
+  );
+
+  await page.keyboard.press(
+    'A'
+  );
+
+  await page.keyboard.up(
+    'Control'
+  );
+
+  await page.keyboard.press(
+    'Backspace'
+  );
+
+  await uiSleep(250);
+
+  const session =
+    await page.target()
+      .createCDPSession();
+
+  try {
+    await session.send(
+      'Input.insertText',
+      {
+        text:
+          finalCaption
+      }
+    );
+  } finally {
+    try {
+      await session.detach();
+    } catch (_) {}
+  }
+
+  console.log(
+    'UI_CDP_INSERT_TEXT_CALLED=YES'
+  );
+
+  console.log(
+    'UI_ENTER_KEY_USED=NO'
+  );
+
+  await uiSleep(1200);
+
+  const actual =
+    normalizeUiText(
+      await box.evaluate(
+        el =>
+          el.innerText || ''
+      )
+    );
+
+  if (
+    actual !==
+    finalCaption
+  ) {
+    console.log(
+      'UI_CAPTION_CDP_EXACT=NO'
+    );
+
+    throw new Error(
+      'UI_CAPTION_MISMATCH_SEND_BLOCKED'
+    );
+  }
+
+  console.log(
+    'UI_CAPTION_CDP_EXACT=YES'
+  );
+}
+
+async function finalPhotoUiGuard(
+  page,
+  finalCaption
+) {
+  const state =
+    await getPhotoPreviewUiState(
+      page
+    );
+
+  if (
+    state.stickerMaker !== false
+  ) {
+    throw new Error(
+      'UI_STICKER_MAKER_GUARD_BLOCK'
+    );
+  }
+
+  if (
+    state.captionBoxCount !== 1 ||
+    state.sendCount !== 1 ||
+    state.largeImageCount < 1
+  ) {
+    throw new Error(
+      'UI_FINAL_PHOTO_PREVIEW_GUARD_BLOCK'
+    );
+  }
+
+  if (
+    normalizeUiText(
+      state.captionBoxes[0].text
+    ) !==
+    finalCaption
+  ) {
+    throw new Error(
+      'UI_FINAL_CAPTION_CHANGED_SEND_BLOCKED'
+    );
+  }
+
+  console.log(
+    'UI_FINAL_CAPTION_EXACT=YES'
+  );
+
+  console.log(
+    'UI_FINAL_PHOTO_PREVIEW_GUARD=PASS'
+  );
+
+  console.log(
+    'UI_STICKER_MAKER_VISIBLE=NO'
+  );
+}
+
+async function clickPhotoSendUi(page) {
+  const result =
+    await page.evaluate(() => {
+      const visible =
+        el => {
+          if (!el) {
+            return false;
+          }
+
+          const rect =
+            el.getBoundingClientRect();
+
+          const style =
+            getComputedStyle(el);
+
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden'
+          );
+        };
+
+      const buttons =
+        Array.from(
+          document.querySelectorAll(
+            '[role="button"][aria-label]'
+          )
+        )
+          .filter(el => {
+            if (!visible(el)) {
+              return false;
+            }
+
+            const aria =
+              (
+                el.getAttribute(
+                  'aria-label'
+                ) || ''
+              ).toLowerCase();
+
+            return (
+              (
+                aria.includes(
+                  'kirim'
+                ) &&
+                aria.includes(
+                  'dipilih'
+                )
+              ) ||
+              (
+                aria.includes(
+                  'send'
+                ) &&
+                aria.includes(
+                  'selected'
+                )
+              )
+            );
+          });
+
+      if (
+        buttons.length !== 1
+      ) {
+        return {
+          clicked: false,
+          count:
+            buttons.length
+        };
+      }
+
+      const label =
+        buttons[0].getAttribute(
+          'aria-label'
+        ) || '';
+
+      buttons[0].click();
+
+      return {
+        clicked: true,
+        count: 1,
+        label
+      };
+    });
+
+  if (
+    result.clicked !== true
+  ) {
+    throw new Error(
+      'UI_PHOTO_SEND_CLICK_FAILED'
+    );
+  }
+
+  console.log(
+    'UI_PHOTO_SEND_BUTTON_CLICKED=YES'
+  );
+
+  console.log(
+    'UI_REAL_PHOTO_SEND_TRIGGERED=YES'
+  );
+
+  return result;
+}
+
+async function waitPhotoPreviewClosedUi(
+  page,
+  timeoutMs
+) {
+  const deadline =
+    Date.now() + timeoutMs;
+
+  while (
+    Date.now() < deadline
+  ) {
+    const state =
+      await getPhotoPreviewUiState(
+        page
+      );
+
+    if (
+      state.captionBoxCount === 0 &&
+      state.sendCount === 0
+    ) {
+      console.log(
+        'UI_PHOTO_PREVIEW_CLOSED_AFTER_CLICK=YES'
+      );
+
+      return true;
+    }
+
+    await uiSleep(500);
+  }
+
+  console.log(
+    'UI_PHOTO_PREVIEW_CLOSED_AFTER_CLICK=NO'
+  );
+
+  return false;
+}
+
+async function sendCheckoutPhotoViaUi(
+  client,
+  media,
+  caption
+) {
+  const page =
+    client.pupPage;
+
+  if (!page) {
+    throw new Error(
+      'UI_PUPPAGE_NOT_AVAILABLE'
+    );
+  }
+
+  if (
+    !media ||
+    typeof media.data !== 'string' ||
+    !media.data
+  ) {
+    throw new Error(
+      'UI_MEDIA_DATA_INVALID'
+    );
+  }
+
+  if (
+    !String(
+      media.mimetype || ''
+    ).startsWith('image/')
+  ) {
+    throw new Error(
+      'UI_MEDIA_NOT_IMAGE'
+    );
+  }
+
+  const finalCaption =
+    toWhatsAppBulletCaption(
+      caption
+    );
+
+  const bytes =
+    Buffer.from(
+      media.data,
+      'base64'
+    );
+
+  if (!bytes.length) {
+    throw new Error(
+      'UI_MEDIA_BYTES_EMPTY'
+    );
+  }
+
+  const extension =
+    imageExtensionFromMime(
+      media.mimetype
+    );
+
+  const filePath =
+    path.join(
+      os.tmpdir(),
+      `wa-auto-absensi-checkout-${process.pid}-${Date.now()}.${extension}`
+    );
+
+  fs.writeFileSync(
+    filePath,
+    bytes
+  );
+
+  console.log(
+    `UI_TEMP_IMAGE_BYTES=${bytes.length}`
+  );
+
+  let clicked = false;
+
+  try {
+    await openTestingUi(page);
+
+    await selectPhotoVideoUi(
+      page,
+      filePath
+    );
+
+    await waitPhotoPreviewUi(
+      page
+    );
+
+    await insertMediaCaptionUi(
+      page,
+      finalCaption
+    );
+
+    await finalPhotoUiGuard(
+      page,
+      finalCaption
+    );
+
+    const clickResult =
+      await clickPhotoSendUi(
+        page
+      );
+
+    clicked =
+      clickResult.clicked === true;
+
+    const previewClosed =
+      await waitPhotoPreviewClosedUi(
+        page,
+        15000
+      );
+
+    /*
+     * Never attempt another click after
+     * the irreversible send action.
+     */
+    await uiSleep(5000);
+
+    return {
+      clicked,
+      previewClosed,
+      finalCaption,
+      sendLabel:
+        clickResult.label || '',
+      timestamp:
+        new Date().toISOString()
+    };
+  } finally {
+    try {
+      fs.unlinkSync(
+        filePath
+      );
+
+      console.log(
+        'UI_TEMP_IMAGE_REMOVED=YES'
+      );
+    } catch (_) {}
+
+    if (clicked) {
+      console.log(
+        'UI_PHOTO_SEND_CLICKED_FINAL=YES'
+      );
+    }
+  }
 }
 
 async function finish(client, code) {
@@ -318,391 +1586,68 @@ if (process.env.MONGODB_URI) {
     console.log('TARGET_GROUP_SAFE=YES');
 
     // ========================================================
-    // 2. READ SELF CHAT
+    // 2. READ ATTENDANCE INPUT FROM MONGODB
     // ========================================================
 
-    const selfId = client.info?.wid?._serialized;
-
-    if (!selfId) {
-      console.log('SELF_ID_FOUND=NO');
-      console.log('MESSAGE_SENT=NO');
-
-      return await finish(client, 30);
-    }
-
-    console.log('SELF_ID_FOUND=YES');
-
-    let selfChat = null;
-    let activeSelfChatId = selfId;
-
-    // SELF_CHAT_LID_RESOLVER_V1
+    // ATTENDANCE_INPUT_MONGODB_V1
     if (
-      process.env.MONGODB_URI &&
-      typeof client.getContactLidAndPhone === 'function'
+      mongoose.connection.readyState !== 1
     ) {
-      try {
-        const mappings = await timeout(
-          client.getContactLidAndPhone([selfId]),
-          30000,
-          'SELF_LID_LOOKUP'
-        );
-
-        const candidateIds = [selfId];
-
-        for (const mapping of mappings || []) {
-          const lid = mapping && mapping.lid;
-
-          if (
-            typeof lid === 'string' &&
-            lid.endsWith('@lid') &&
-            !candidateIds.includes(lid)
-          ) {
-            candidateIds.push(lid);
-          }
-        }
-
-        console.log(
-          `SELF_CHAT_ID_CANDIDATE_COUNT=${candidateIds.length}`
-        );
-
-        let selectedActivity = -1;
-
-        for (const candidateId of candidateIds) {
-          const candidateServer =
-            String(candidateId).split('@')[1] || 'unknown';
-
-          try {
-            const candidateChat = await timeout(
-              client.getChatById(candidateId),
-              30000,
-              'SELF_CHAT_CANDIDATE_LOOKUP'
-            );
-
-            if (!candidateChat) {
-              console.log(
-                `SELF_CHAT_CANDIDATE_${candidateServer}=NOT_FOUND`
-              );
-
-              continue;
-            }
-
-            const candidateMessages = await timeout(
-              candidateChat.fetchMessages({
-                limit: FETCH_LIMIT,
-                fromMe: true
-              }),
-              60000,
-              'SELF_CHAT_CANDIDATE_FETCH'
-            );
-
-            const chatTimestamp =
-              Number(candidateChat.timestamp || 0);
-
-            const maxMessageTimestamp =
-              candidateMessages.reduce(
-                (maxTimestamp, msg) =>
-                  Math.max(
-                    maxTimestamp,
-                    Number(msg.timestamp || 0)
-                  ),
-                0
-              );
-
-            const activity =
-              Math.max(
-                chatTimestamp,
-                maxMessageTimestamp
-              );
-
-            console.log(
-              `SELF_CHAT_CANDIDATE_SERVER=${candidateServer}`
-            );
-
-            console.log(
-              `SELF_CHAT_CANDIDATE_MESSAGE_COUNT=${candidateMessages.length}`
-            );
-
-            console.log(
-              `SELF_CHAT_CANDIDATE_ACTIVITY=${activity}`
-            );
-
-            if (activity > selectedActivity) {
-              selectedActivity = activity;
-              selfChat = candidateChat;
-              activeSelfChatId = candidateId;
-            }
-          } catch (error) {
-            const candidateError =
-              error && error.message
-                ? error.message
-                : String(error);
-
-            console.log(
-              `SELF_CHAT_CANDIDATE_${candidateServer}=ERROR`
-            );
-
-            console.log(
-              `SELF_CHAT_CANDIDATE_ERROR=${candidateError}`
-            );
-          }
-        }
-
-        if (selfChat) {
-          const selectedServer =
-            String(activeSelfChatId).split('@')[1] ||
-            'unknown';
-
-          console.log(
-            `SELF_CHAT_SELECTED_SERVER=${selectedServer}`
-          );
-
-          console.log(
-            `SELF_CHAT_SELECTED_ACTIVITY=${selectedActivity}`
-          );
-        }
-      } catch (error) {
-        const lidError =
-          error && error.message
-            ? error.message
-            : String(error);
-
-        console.log(
-          'SELF_LID_LOOKUP_RESULT=ERROR'
-        );
-
-        console.log(
-          `SELF_LID_LOOKUP_ERROR=${lidError}`
-        );
-      }
-    }
-
-    if (!selfChat) {
-      selfChat = await timeout(
-        client.getChatById(activeSelfChatId),
-        30000,
-        'SELF_CHAT_LOOKUP'
-      );
-    }
-
-    if (!selfChat) {
-      console.log('SELF_CHAT_FOUND=NO');
+      console.log('ATTENDANCE_INPUT_STORE_READY=NO');
+      console.log('REASON=MONGODB_CONNECTION_REQUIRED');
       console.log('MESSAGE_SENT=NO');
 
-      return await finish(client, 31);
+      return await finish(client, 36);
     }
 
-    console.log('SELF_CHAT_FOUND=YES');
-
-    console.log(
-      `SELF_CHAT_ACTIVE_SERVER=${
-        String(activeSelfChatId).split('@')[1] ||
-        'unknown'
-      }`
-    );
-
-    let messages;
-
-    // SELF_CHAT_FRESHNESS_GATE_V1
-    if (process.env.MONGODB_URI) {
-      const freshnessAttempts = 6;
-      const freshnessPollMs = 5000;
-
-      let refreshedSelfChat = selfChat;
-      let selfChatFresh = false;
-
-      console.log('SELF_CHAT_FRESHNESS_GATE=REMOTE');
-
-      for (
-        let attempt = 1;
-        attempt <= freshnessAttempts;
-        attempt += 1
-      ) {
-        console.log(
-          `SELF_CHAT_FRESHNESS_ATTEMPT=${attempt}`
-        );
-
-        try {
-          const syncResult = await timeout(
-            refreshedSelfChat.syncHistory(),
-            10000,
-            'SELF_CHAT_SYNC_HISTORY'
-          );
-
-          console.log(
-            `SELF_CHAT_SYNC_HISTORY_RESULT=${syncResult}`
-          );
-        } catch (error) {
-          const syncError =
-            error && error.message
-              ? error.message
-              : String(error);
-
-          console.log(
-            'SELF_CHAT_SYNC_HISTORY_RESULT=ERROR'
-          );
-
-          console.log(
-            `SELF_CHAT_SYNC_HISTORY_ERROR=${syncError}`
-          );
-        }
-
-        refreshedSelfChat = await timeout(
-          client.getChatById(activeSelfChatId),
-          30000,
-          'SELF_CHAT_REFRESH'
-        );
-
-        if (!refreshedSelfChat) {
-          console.log(
-            'SELF_CHAT_REFRESH_FOUND=NO'
-          );
-
-          if (attempt < freshnessAttempts) {
-            await new Promise(resolve =>
-              setTimeout(resolve, freshnessPollMs)
-            );
-          }
-
-          continue;
-        }
-
-        console.log(
-          'SELF_CHAT_REFRESH_FOUND=YES'
-        );
-
-        messages = await timeout(
-          refreshedSelfChat.fetchMessages({
-            limit: FETCH_LIMIT,
-            fromMe: true
-          }),
-          60000,
-          'FETCH_MESSAGES'
-        );
-
-        const chatTimestamp =
-          Number(refreshedSelfChat.timestamp || 0);
-
-        const maxMessageTimestamp =
-          messages.reduce(
-            (maxTimestamp, msg) =>
-              Math.max(
-                maxTimestamp,
-                Number(msg.timestamp || 0)
-              ),
-            0
-          );
-
-        console.log(
-          `FETCHED_MESSAGE_COUNT=${messages.length}`
-        );
-
-        console.log(
-          `SELF_CHAT_TIMESTAMP=${chatTimestamp}`
-        );
-
-        console.log(
-          `SELF_CHAT_MAX_FETCHED_TIMESTAMP=${maxMessageTimestamp}`
-        );
-
-        if (
-          chatTimestamp > 0 &&
-          maxMessageTimestamp >= chatTimestamp
-        ) {
-          selfChatFresh = true;
-
-          console.log(
-            'SELF_CHAT_FRESHNESS=PASS'
-          );
-
-          break;
-        }
-
-        console.log(
-          'SELF_CHAT_FRESHNESS=STALE'
-        );
-
-        if (attempt < freshnessAttempts) {
-          await new Promise(resolve =>
-            setTimeout(resolve, freshnessPollMs)
-          );
-        }
-      }
-
-      if (!selfChatFresh) {
-        console.log(
-          'SELF_CHAT_FRESHNESS=FAIL'
-        );
-
-        console.log(
-          'REASON=SELF_CHAT_HISTORY_NOT_CAUGHT_UP'
-        );
-
-        console.log(
-          'MESSAGE_SENT=NO'
-        );
-
-        return await finish(client, 35);
-      }
-    } else {
-      messages = await timeout(
-        selfChat.fetchMessages({
-          limit: FETCH_LIMIT,
-          fromMe: true
-        }),
-        60000,
-        'FETCH_MESSAGES'
-      );
-
-      console.log(
-        `FETCHED_MESSAGE_COUNT=${messages.length}`
-      );
-    }
+    console.log('ATTENDANCE_INPUT_STORE_READY=YES');
 
     // ========================================================
-    // 3. FIND LATEST PROJECT p:
+    // 3. FIND LATEST PROJECT
     // ========================================================
 
-    const projects = messages
-      .map(msg => ({
-        project: normalizeProjectText(msg.body),
-        timestamp: Number(msg.timestamp || 0)
-      }))
-      .filter(item => item.project)
-      .sort((a, b) => b.timestamp - a.timestamp);
+    const latestProject =
+      await timeout(
+        getLatestProject(
+          mongoose.connection
+        ),
+        30000,
+        'GET_LATEST_PROJECT'
+      );
 
-    if (!projects.length) {
+    if (
+      !latestProject ||
+      typeof latestProject.project !== 'string' ||
+      !latestProject.project.trim() ||
+      !(latestProject.createdAt instanceof Date)
+    ) {
       console.log('PROJECT_FOUND=NO');
       console.log('MESSAGE_SENT=NO');
 
       return await finish(client, 32);
     }
 
-    const latestProject = projects[0];
-
     console.log('PROJECT_FOUND=YES');
     console.log(`PROJECT=${latestProject.project}`);
-    console.log(`PROJECT_TIMESTAMP=${latestProject.timestamp}`);
-
-    // ========================================================
-    // 4. FIND DOCUMENTATION IMAGE AFTER PROJECT
-    // ========================================================
-
-    const imageCandidates = messages
-      .filter(isDocumentationImage)
-      .map(msg => ({
-        msg,
-        timestamp: Number(msg.timestamp || 0)
-      }))
-      .filter(item =>
-        item.timestamp >= latestProject.timestamp
-      )
-      .sort((a, b) => b.timestamp - a.timestamp);
-
     console.log(
-      `DOC_IMAGE_AFTER_PROJECT_COUNT=${imageCandidates.length}`
+      `PROJECT_TIMESTAMP=${latestProject.createdAt.toISOString()}`
     );
 
-    if (!imageCandidates.length) {
+    // ========================================================
+    // 4. FIND DOCUMENTATION AFTER PROJECT
+    // ========================================================
+
+    const latestDocumentation =
+      await timeout(
+        getLatestDocumentationAfter(
+          mongoose.connection,
+          latestProject.createdAt
+        ),
+        30000,
+        'GET_LATEST_DOCUMENTATION'
+      );
+
+    if (!latestDocumentation) {
       console.log('DOC_IMAGE_FOUND=NO');
       console.log('REASON=NO_IMAGE_p_AFTER_LATEST_PROJECT');
       console.log('MESSAGE_SENT=NO');
@@ -710,25 +1655,36 @@ if (process.env.MONGODB_URI) {
       return await finish(client, 33);
     }
 
-    const latestImage = imageCandidates[0];
-
     console.log('DOC_IMAGE_FOUND=YES');
-    console.log(`DOC_IMAGE_TIMESTAMP=${latestImage.timestamp}`);
+    console.log(
+      `DOC_IMAGE_TIMESTAMP=${
+        latestDocumentation.createdAt instanceof Date
+          ? latestDocumentation.createdAt.toISOString()
+          : 'UNKNOWN'
+      }`
+    );
     console.log('DOC_IMAGE_PAIR_VALID=YES');
 
     // ========================================================
-    // 5. DOWNLOAD DOCUMENTATION
+    // 5. DOWNLOAD DOCUMENTATION FROM GRIDFS
     // ========================================================
 
     console.log('DOWNLOAD_MEDIA_START=YES');
 
-    const downloaded = await timeout(
-      latestImage.msg.downloadMedia(),
-      120000,
-      'DOWNLOAD_MEDIA'
-    );
+    const documentationBuffer =
+      await timeout(
+        downloadDocumentation(
+          mongoose.connection,
+          latestDocumentation
+        ),
+        120000,
+        'DOWNLOAD_DOCUMENTATION'
+      );
 
-    if (!downloaded || !downloaded.data) {
+    if (
+      !Buffer.isBuffer(documentationBuffer) ||
+      documentationBuffer.length === 0
+    ) {
       console.log('DOWNLOAD_MEDIA_SUCCESS=NO');
       console.log('MESSAGE_SENT=NO');
 
@@ -736,13 +1692,17 @@ if (process.env.MONGODB_URI) {
     }
 
     console.log('DOWNLOAD_MEDIA_SUCCESS=YES');
+
+    const documentationMime =
+      latestDocumentation.mimetype;
+
     console.log(
-      `DOCUMENTATION_MIMETYPE=${downloaded.mimetype || 'UNKNOWN'}`
+      `DOCUMENTATION_MIMETYPE=${documentationMime || 'UNKNOWN'}`
     );
 
     if (
-      typeof downloaded.mimetype !== 'string' ||
-      !downloaded.mimetype.startsWith('image/')
+      typeof documentationMime !== 'string' ||
+      !documentationMime.startsWith('image/')
     ) {
       console.log('DOCUMENTATION_VALID_IMAGE=NO');
       console.log('MESSAGE_SENT=NO');
@@ -752,10 +1712,41 @@ if (process.env.MONGODB_URI) {
 
     console.log('DOCUMENTATION_VALID_IMAGE=YES');
 
+    const metadataSize =
+      Number(latestDocumentation.size);
+
+    if (
+      Number.isFinite(metadataSize) &&
+      metadataSize > 0 &&
+      metadataSize !== documentationBuffer.length
+    ) {
+      console.log('DOCUMENTATION_SIZE_MATCH=NO');
+      console.log('MESSAGE_SENT=NO');
+
+      return await finish(client, 34);
+    }
+
+    console.log('DOCUMENTATION_SIZE_MATCH=YES');
+    console.log(
+      `DOCUMENTATION_SIZE=${documentationBuffer.length}`
+    );
+
+    const downloaded = {
+      mimetype: documentationMime,
+      data: documentationBuffer.toString(
+        'base64'
+      ),
+      filename:
+        typeof latestDocumentation.filename ===
+          'string' &&
+        latestDocumentation.filename.trim()
+          ? latestDocumentation.filename.trim()
+          : 'dokumentasi.jpg'
+    };
+
     // ========================================================
     // 6. BUILD CHECK OUT CAPTION
     // ========================================================
-
     const caption = buildCheckOut({
       project: latestProject.project,
       date: new Date()
@@ -781,12 +1772,21 @@ if (process.env.MONGODB_URI) {
     // 8. SEND IMAGE + CAPTION TO TESTING
     // ========================================================
 
+    const uiCaption =
+      toWhatsAppBulletCaption(
+        caption
+      );
+
+    console.log(
+      'CAPTION_UI_FORMAT=BULLET'
+    );
+
     console.log('DUPLICATE_CHECK_START=YES');
 
     const duplicate = await timeout(
       findOutgoingDuplicate(
         targetChat,
-        caption,
+        uiCaption,
         {
           limit: 100,
           requireMedia: true
@@ -809,72 +1809,102 @@ if (process.env.MONGODB_URI) {
 
     console.log('DUPLICATE_FOUND=NO');
     console.log('SEND_START=YES');
+    console.log('SEND_MODE=UI_PHOTO_VIDEO');
 
-    const sent = await timeout(
-      client.sendMessage(
-        targetGroupId,
+    const uiSend = await timeout(
+      sendCheckoutPhotoViaUi(
+        client,
         media,
-        {
-          caption
-        }
+        uiCaption
       ),
       120000,
-      'SEND_CHECKOUT'
+      'SEND_CHECKOUT_UI_PHOTO'
     );
 
-    if (!sent) {
+    if (
+      !uiSend ||
+      uiSend.clicked !== true
+    ) {
       console.log('MESSAGE_SENT=NO');
+      console.log('MEDIA_SENT=NO');
+      console.log('CAPTION_SENT=NO');
+      console.log('STEP_4_1E_CHECKOUT=FAIL');
 
       return await finish(client, 40);
     }
 
-    console.log(`ACK_INITIAL=${sent.ack}`);
+    /*
+     * The selected-media send click is irreversible.
+     * Never retry inside this run.
+     *
+     * If the preview does not close, treat delivery
+     * as unknown rather than clicking Send again.
+     */
+    if (
+      uiSend.previewClosed !== true
+    ) {
+      console.log(
+        'UI_SEND_COMMIT_CONFIRMED=NO'
+      );
 
-    const ackDeadline = Date.now() + 45000;
-    let ack = Number(sent.ack ?? 0);
+      console.log(
+        'SERVER_ACK_CONFIRMED=NOT_AVAILABLE_UI_PATH'
+      );
 
-    while (Date.now() < ackDeadline && ack < 1) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      console.log(
+        'MESSAGE_SENT=UNKNOWN'
+      );
 
-      try {
-        const reloaded = await sent.reload();
+      console.log(
+        'MEDIA_SENT=UNKNOWN'
+      );
 
-        if (!reloaded) {
-          console.log('MESSAGE_RELOAD=NULL');
-          continue;
-        }
+      console.log(
+        'CAPTION_SENT=UNKNOWN'
+      );
 
-        ack = Number(sent.ack ?? 0);
-        console.log(`ACK_CURRENT=${ack}`);
+      console.log(
+        'STEP_4_1E_CHECKOUT=FAIL'
+      );
 
-      } catch (error) {
-        console.log(`MESSAGE_RELOAD_ERROR=${error.message}`);
-      }
+      await new Promise(
+        resolve =>
+          setTimeout(resolve, 5000)
+      );
+
+      return await finish(
+        client,
+        42
+      );
     }
 
-    console.log(`ACK_FINAL=${ack}`);
+    console.log(
+      'UI_SEND_COMMIT_CONFIRMED=YES'
+    );
 
-    if (ack < 1) {
-      console.log('SERVER_ACK_CONFIRMED=NO');
-      console.log('MESSAGE_SENT=NO');
-      console.log('MEDIA_SENT=UNKNOWN');
-      console.log('CAPTION_SENT=UNKNOWN');
-      console.log('STEP_4_1E_CHECKOUT=FAIL');
+    console.log(
+      'SERVER_ACK_CONFIRMED=NOT_AVAILABLE_UI_PATH'
+    );
 
-      await new Promise(resolve => setTimeout(resolve, 5000));
-
-      return await finish(client, 41);
-    }
-
-    console.log('SERVER_ACK_CONFIRMED=YES');
     console.log('MESSAGE_SENT=YES');
     console.log('MEDIA_SENT=YES');
     console.log('CAPTION_SENT=YES');
     console.log('TARGET_GROUP_CONFIRMED=Testing');
-    console.log(`SENT_TIMESTAMP=${sent.timestamp || 'UNKNOWN'}`);
+
+    console.log(
+      `UI_SEND_CONTROL=${uiSend.sendLabel || 'UNKNOWN'}`
+    );
+
+    console.log(
+      `SENT_TIMESTAMP=${uiSend.timestamp || 'UNKNOWN'}`
+    );
+
     console.log('STEP_4_1E_CHECKOUT=PASS');
 
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await new Promise(
+      resolve =>
+        setTimeout(resolve, 3000)
+    );
 
     await finish(client, 0);
 

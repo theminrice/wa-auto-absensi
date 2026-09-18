@@ -445,12 +445,7 @@ async function main() {
       'MONGODB_URI_MISSING'
     );
   }
-
-  if (!EXPECTED_PROJECT) {
-    throw new Error(
-      'WA_BOOTSTRAP_EXPECTED_PROJECT_MISSING'
-    );
-  }
+  // REMOTE_V2_AUTH_ONLY_V1
 
   console.log(
     '============================================================'
@@ -475,9 +470,8 @@ async function main() {
   console.log(
     `REMOTE_V2_CLIENT_ID=${CLIENT_ID}`
   );
-
   console.log(
-    `EXPECTED_PROJECT=${EXPECTED_PROJECT}`
+    'REMOTE_V2_BOOTSTRAP_MODE=AUTH_ONLY'
   );
 
   await fs.promises.mkdir(
@@ -658,23 +652,8 @@ async function main() {
       );
 
       try {
-        const projectFound =
-          await findExpectedProject();
-
-        if (!projectFound) {
-          console.log(
-            'REMOTE_V2_PROJECT_VERIFY=FAIL'
-          );
-
-          console.log(
-            'MESSAGE_SENT=NO'
-          );
-
-          return await cleanup(21);
-        }
-
         console.log(
-          'REMOTE_V2_PROJECT_VERIFY=PASS'
+          'REMOTE_V2_AUTH_ONLY_READY=YES'
         );
 
         const sessionSaved =

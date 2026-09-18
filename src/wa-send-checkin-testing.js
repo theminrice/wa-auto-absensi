@@ -14,7 +14,6 @@ const {
   createRemoteAuth
 } = require('./remote-auth');
 const {
-  normalizeProjectText,
   buildCheckIn
 } = require('./attendance');
 
@@ -22,8 +21,11 @@ const {
   findOutgoingDuplicate
 } = require('./duplicate-guard');
 
+const {
+  getLatestProject
+} = require('./attendance-input-store');
+
 const EXPECTED_GROUP_NAME = 'Testing';
-const FETCH_LIMIT = 100;
 
 // WA_AUTO_ABSENSI_DUAL_AUTH_V1
 const useRemoteAuth =
@@ -291,363 +293,52 @@ if (process.env.MONGODB_URI) {
 
     console.log('TARGET_GROUP_SAFE=YES');
 
-    const selfId = client.info?.wid?._serialized;
-
-    if (!selfId) {
-      console.log('SELF_ID_FOUND=NO');
-      console.log('MESSAGE_SENT=NO');
-
-      return await finish(client, 30);
-    }
-
-    console.log('SELF_ID_FOUND=YES');
-
-    let selfChat = null;
-    let activeSelfChatId = selfId;
-
-    // SELF_CHAT_LID_RESOLVER_V1
+    // ATTENDANCE_INPUT_MONGODB_V1
     if (
-      process.env.MONGODB_URI &&
-      typeof client.getContactLidAndPhone === 'function'
+      mongoose.connection.readyState !== 1
     ) {
-      try {
-        const mappings = await timeout(
-          client.getContactLidAndPhone([selfId]),
-          30000,
-          'SELF_LID_LOOKUP'
-        );
-
-        const candidateIds = [selfId];
-
-        for (const mapping of mappings || []) {
-          const lid = mapping && mapping.lid;
-
-          if (
-            typeof lid === 'string' &&
-            lid.endsWith('@lid') &&
-            !candidateIds.includes(lid)
-          ) {
-            candidateIds.push(lid);
-          }
-        }
-
-        console.log(
-          `SELF_CHAT_ID_CANDIDATE_COUNT=${candidateIds.length}`
-        );
-
-        let selectedActivity = -1;
-
-        for (const candidateId of candidateIds) {
-          const candidateServer =
-            String(candidateId).split('@')[1] || 'unknown';
-
-          try {
-            const candidateChat = await timeout(
-              client.getChatById(candidateId),
-              30000,
-              'SELF_CHAT_CANDIDATE_LOOKUP'
-            );
-
-            if (!candidateChat) {
-              console.log(
-                `SELF_CHAT_CANDIDATE_${candidateServer}=NOT_FOUND`
-              );
-
-              continue;
-            }
-
-            const candidateMessages = await timeout(
-              candidateChat.fetchMessages({
-                limit: FETCH_LIMIT,
-                fromMe: true
-              }),
-              60000,
-              'SELF_CHAT_CANDIDATE_FETCH'
-            );
-
-            const chatTimestamp =
-              Number(candidateChat.timestamp || 0);
-
-            const maxMessageTimestamp =
-              candidateMessages.reduce(
-                (maxTimestamp, msg) =>
-                  Math.max(
-                    maxTimestamp,
-                    Number(msg.timestamp || 0)
-                  ),
-                0
-              );
-
-            const activity =
-              Math.max(
-                chatTimestamp,
-                maxMessageTimestamp
-              );
-
-            console.log(
-              `SELF_CHAT_CANDIDATE_SERVER=${candidateServer}`
-            );
-
-            console.log(
-              `SELF_CHAT_CANDIDATE_MESSAGE_COUNT=${candidateMessages.length}`
-            );
-
-            console.log(
-              `SELF_CHAT_CANDIDATE_ACTIVITY=${activity}`
-            );
-
-            if (activity > selectedActivity) {
-              selectedActivity = activity;
-              selfChat = candidateChat;
-              activeSelfChatId = candidateId;
-            }
-          } catch (error) {
-            const candidateError =
-              error && error.message
-                ? error.message
-                : String(error);
-
-            console.log(
-              `SELF_CHAT_CANDIDATE_${candidateServer}=ERROR`
-            );
-
-            console.log(
-              `SELF_CHAT_CANDIDATE_ERROR=${candidateError}`
-            );
-          }
-        }
-
-        if (selfChat) {
-          const selectedServer =
-            String(activeSelfChatId).split('@')[1] ||
-            'unknown';
-
-          console.log(
-            `SELF_CHAT_SELECTED_SERVER=${selectedServer}`
-          );
-
-          console.log(
-            `SELF_CHAT_SELECTED_ACTIVITY=${selectedActivity}`
-          );
-        }
-      } catch (error) {
-        const lidError =
-          error && error.message
-            ? error.message
-            : String(error);
-
-        console.log(
-          'SELF_LID_LOOKUP_RESULT=ERROR'
-        );
-
-        console.log(
-          `SELF_LID_LOOKUP_ERROR=${lidError}`
-        );
-      }
-    }
-
-    if (!selfChat) {
-      selfChat = await timeout(
-        client.getChatById(activeSelfChatId),
-        30000,
-        'SELF_CHAT_LOOKUP'
-      );
-    }
-
-    if (!selfChat) {
-      console.log('SELF_CHAT_FOUND=NO');
+      console.log('ATTENDANCE_INPUT_STORE_READY=NO');
+      console.log('REASON=MONGODB_CONNECTION_REQUIRED');
       console.log('MESSAGE_SENT=NO');
 
-      return await finish(client, 31);
+      return await finish(client, 36);
     }
 
-    console.log('SELF_CHAT_FOUND=YES');
+    console.log('ATTENDANCE_INPUT_STORE_READY=YES');
 
-    console.log(
-      `SELF_CHAT_ACTIVE_SERVER=${
-        String(activeSelfChatId).split('@')[1] ||
-        'unknown'
-      }`
-    );
-
-    let messages;
-
-    // SELF_CHAT_FRESHNESS_GATE_V1
-    if (process.env.MONGODB_URI) {
-      const freshnessAttempts = 6;
-      const freshnessPollMs = 5000;
-
-      let refreshedSelfChat = selfChat;
-      let selfChatFresh = false;
-
-      console.log('SELF_CHAT_FRESHNESS_GATE=REMOTE');
-
-      for (
-        let attempt = 1;
-        attempt <= freshnessAttempts;
-        attempt += 1
-      ) {
-        console.log(
-          `SELF_CHAT_FRESHNESS_ATTEMPT=${attempt}`
-        );
-
-        try {
-          const syncResult = await timeout(
-            refreshedSelfChat.syncHistory(),
-            10000,
-            'SELF_CHAT_SYNC_HISTORY'
-          );
-
-          console.log(
-            `SELF_CHAT_SYNC_HISTORY_RESULT=${syncResult}`
-          );
-        } catch (error) {
-          const syncError =
-            error && error.message
-              ? error.message
-              : String(error);
-
-          console.log(
-            'SELF_CHAT_SYNC_HISTORY_RESULT=ERROR'
-          );
-
-          console.log(
-            `SELF_CHAT_SYNC_HISTORY_ERROR=${syncError}`
-          );
-        }
-
-        refreshedSelfChat = await timeout(
-          client.getChatById(activeSelfChatId),
-          30000,
-          'SELF_CHAT_REFRESH'
-        );
-
-        if (!refreshedSelfChat) {
-          console.log(
-            'SELF_CHAT_REFRESH_FOUND=NO'
-          );
-
-          if (attempt < freshnessAttempts) {
-            await new Promise(resolve =>
-              setTimeout(resolve, freshnessPollMs)
-            );
-          }
-
-          continue;
-        }
-
-        console.log(
-          'SELF_CHAT_REFRESH_FOUND=YES'
-        );
-
-        messages = await timeout(
-          refreshedSelfChat.fetchMessages({
-            limit: FETCH_LIMIT,
-            fromMe: true
-          }),
-          60000,
-          'FETCH_MESSAGES'
-        );
-
-        const chatTimestamp =
-          Number(refreshedSelfChat.timestamp || 0);
-
-        const maxMessageTimestamp =
-          messages.reduce(
-            (maxTimestamp, msg) =>
-              Math.max(
-                maxTimestamp,
-                Number(msg.timestamp || 0)
-              ),
-            0
-          );
-
-        console.log(
-          `FETCHED_MESSAGE_COUNT=${messages.length}`
-        );
-
-        console.log(
-          `SELF_CHAT_TIMESTAMP=${chatTimestamp}`
-        );
-
-        console.log(
-          `SELF_CHAT_MAX_FETCHED_TIMESTAMP=${maxMessageTimestamp}`
-        );
-
-        if (
-          chatTimestamp > 0 &&
-          maxMessageTimestamp >= chatTimestamp
-        ) {
-          selfChatFresh = true;
-
-          console.log(
-            'SELF_CHAT_FRESHNESS=PASS'
-          );
-
-          break;
-        }
-
-        console.log(
-          'SELF_CHAT_FRESHNESS=STALE'
-        );
-
-        if (attempt < freshnessAttempts) {
-          await new Promise(resolve =>
-            setTimeout(resolve, freshnessPollMs)
-          );
-        }
-      }
-
-      if (!selfChatFresh) {
-        console.log(
-          'SELF_CHAT_FRESHNESS=FAIL'
-        );
-
-        console.log(
-          'REASON=SELF_CHAT_HISTORY_NOT_CAUGHT_UP'
-        );
-
-        console.log(
-          'MESSAGE_SENT=NO'
-        );
-
-        return await finish(client, 35);
-      }
-    } else {
-      messages = await timeout(
-        selfChat.fetchMessages({
-          limit: FETCH_LIMIT,
-          fromMe: true
-        }),
-        60000,
-        'FETCH_MESSAGES'
+    const latestProjectDocument =
+      await timeout(
+        getLatestProject(
+          mongoose.connection
+        ),
+        30000,
+        'GET_LATEST_PROJECT'
       );
 
-      console.log(
-        `FETCHED_MESSAGE_COUNT=${messages.length}`
-      );
-    }
-
-    const projects = messages
-      .map(msg => ({
-        project: normalizeProjectText(msg.body),
-        timestamp: Number(msg.timestamp || 0)
-      }))
-      .filter(item => item.project)
-      .sort((a, b) => b.timestamp - a.timestamp);
-
-    if (!projects.length) {
+    if (
+      !latestProjectDocument ||
+      typeof latestProjectDocument.project !== 'string' ||
+      !latestProjectDocument.project.trim()
+    ) {
       console.log('PROJECT_FOUND=NO');
       console.log('MESSAGE_SENT=NO');
 
       return await finish(client, 32);
     }
 
-    const latestProject = projects[0].project;
+    const latestProject =
+      latestProjectDocument.project.trim();
 
     console.log('PROJECT_FOUND=YES');
     console.log(`PROJECT=${latestProject}`);
 
+    console.log(
+      `PROJECT_TIMESTAMP=${
+        latestProjectDocument.createdAt instanceof Date
+          ? latestProjectDocument.createdAt.toISOString()
+          : 'UNKNOWN'
+      }`
+    );
     const message = buildCheckIn({
       project: latestProject,
       date: new Date()

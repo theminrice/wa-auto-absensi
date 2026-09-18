@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 const fs = require('fs');
 const os = require('os');
@@ -12,7 +12,7 @@ const {
   MongoStore
 } = require('wwebjs-mongo');
 
-const REMOTE_AUTH_CLIENT_ID = 'wa-auto-absensi-remote';
+const REMOTE_AUTH_CLIENT_ID = 'wa-auto-absensi-remote-v2';
 
 const REMOTE_AUTH_SESSION =
   `RemoteAuth-${REMOTE_AUTH_CLIENT_ID}`;
