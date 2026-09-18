@@ -63,15 +63,14 @@ function normalizeProjectText(raw) {
 function buildCheckIn({ project, date = new Date() }) {
   if (!project) throw new Error('PROJECT_REQUIRED');
 
-  const p = getJakartaParts(date);
-  const cleaning = isCleaningDay(p.weekday) ? '✅' : '❌';
-
   return [
     `Check In, ${formatDateID(date)}`,
     '',
-    `- 08.00 : Sampai Kantor✅`,
-    `- 08.10 : Membersihkan Ruangan${cleaning}`,
-    `- 08.30 : ${project}`
+    `- 08.00 : Sampai Kantor`,
+    `- 08.10 : Membersihkan Ruangan`,
+    `- 08.30 : ${project}`,
+    `- 15.55 : Merapikan Dan Membersihkan Ruangan`,
+    `- 16.00 : Pulang`
   ].join('\n');
 }
 

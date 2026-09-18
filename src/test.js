@@ -23,7 +23,19 @@ const checkIn = buildCheckIn({
   date: thursday
 });
 assert(checkIn.includes('Check In, Kamis 17 September 2026'));
-assert(checkIn.includes('Membersihkan Ruangan✅'));
+assert.strictEqual(
+  checkIn,
+  [
+    'Check In, Kamis 17 September 2026',
+    '',
+    '- 08.00 : Sampai Kantor',
+    '- 08.10 : Membersihkan Ruangan',
+    '- 08.30 : Melanjutkan audit sekuritas backend',
+    '- 15.55 : Merapikan Dan Membersihkan Ruangan',
+    '- 16.00 : Pulang'
+  ].join('\n')
+);
+assert(!/[✅❌]/u.test(checkIn));
 
 const checkOut = buildCheckOut({
   project: 'Melanjutkan audit sekuritas backend',
