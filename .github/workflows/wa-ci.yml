@@ -45,6 +45,8 @@ jobs:
           node --check src/wa-read-doc-image.js
           node --check src/wa-send-checkin-testing.js
           node --check src/wa-send-checkout-testing.js
+          node --check src/wa-send-checkin-production.js
+          node --check src/wa-send-checkout-production.js
           echo "SOURCE_SYNTAX=PASS"
 
       - name: Safe result
