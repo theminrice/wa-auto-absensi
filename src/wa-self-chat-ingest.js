@@ -19,6 +19,7 @@ const {
 
 const {
   INPUT_COLLECTION,
+  STORAGE_VERSION,
   ensureAttendanceIndexes,
   saveProject,
   saveDocumentation
@@ -361,6 +362,100 @@ async function alreadyPersisted(
   return !!existing;
 }
 
+// WA_AUTO_ABSENSI_CURRENT_STATE_REPLAY_GUARD_V1
+async function getCurrentCanonical(kind) {
+  const collection =
+    mongoose.connection.db.collection(
+      INPUT_COLLECTION
+    );
+
+  return collection.findOne(
+    {
+      kind
+    },
+    {
+      projection: {
+        _id: 1,
+        createdAt: 1
+      },
+      sort: {
+        createdAt: -1,
+        _id: -1
+      }
+    }
+  );
+}
+
+async function markDedupOnly(messageId) {
+  if (!messageId) {
+    return;
+  }
+
+  const collection =
+    mongoose.connection.db.collection(
+      INPUT_COLLECTION
+    );
+
+  const now =
+    new Date();
+
+  await collection.updateOne(
+    {
+      kind: 'ingest-dedup'
+    },
+    {
+      $setOnInsert: {
+        version: STORAGE_VERSION,
+        kind: 'ingest-dedup',
+        source: 'system',
+        createdAt: now
+      },
+      $set: {
+        updatedAt: now
+      },
+      $addToSet: {
+        sourceMessageId: messageId
+      }
+    },
+    {
+      upsert: true
+    }
+  );
+
+  processedMessageIds.add(
+    messageId
+  );
+}
+
+function isNewerThanCurrent(
+  message,
+  current
+) {
+  if (
+    !current ||
+    !current.createdAt
+  ) {
+    return true;
+  }
+
+  const incomingTime =
+    messageTimestamp(message)
+      .getTime();
+
+  const currentTime =
+    new Date(
+      current.createdAt
+    ).getTime();
+
+  if (
+    !Number.isFinite(currentTime)
+  ) {
+    return true;
+  }
+
+  return incomingTime > currentTime;
+}
+
 async function markPersisted(
   storedId,
   messageId
@@ -544,11 +639,67 @@ async function handleMessage(message) {
   const messageId =
     getMessageId(message);
 
-  if (
-    await alreadyPersisted(messageId)
-  ) {
+  const kind =
+    project
+      ? 'project'
+      : 'documentation';
+
+  const current =
+    await getCurrentCanonical(
+      kind
+    );
+
+  const persisted =
+    await alreadyPersisted(
+      messageId
+    );
+
+  if (persisted) {
+    if (
+      !isNewerThanCurrent(
+        message,
+        current
+      )
+    ) {
+      console.log(
+        'SELF_CHAT_DUPLICATE_SKIPPED=YES'
+      );
+
+      return;
+    }
+
     console.log(
-      'SELF_CHAT_DUPLICATE_SKIPPED=YES'
+      'SELF_CHAT_DUPLICATE_REPLAY_FOR_CURRENT_STATE=YES'
+    );
+
+    console.log(
+      `SELF_CHAT_REPLAY_KIND=${kind}`
+    );
+  } else if (
+    current &&
+    !isNewerThanCurrent(
+      message,
+      current
+    )
+  ) {
+    await markDedupOnly(
+      messageId
+    );
+
+    console.log(
+      'SELF_CHAT_STALE_REPLAY_SKIPPED=YES'
+    );
+
+    console.log(
+      `SELF_CHAT_STALE_KIND=${kind}`
+    );
+
+    console.log(
+      `SELF_CHAT_STALE_TIMESTAMP=${messageTimestamp(message).toISOString()}`
+    );
+
+    console.log(
+      `SELF_CHAT_CURRENT_TIMESTAMP=${new Date(current.createdAt).toISOString()}`
     );
 
     return;
