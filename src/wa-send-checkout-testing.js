@@ -580,143 +580,103 @@ async function uploadPhotoVideoFallbackUi(
   page,
   filePath
 ) {
-  const handles =
-    await page.$$(
-      'input[type="file"]'
+  // WA_AUTO_ABSENSI_FOOTER_FILE_INPUT_FALLBACK_V1
+  const deadline =
+    Date.now() + 5000;
+
+  while (Date.now() < deadline) {
+    const handles =
+      await page.$$(
+        'footer input[type="file"]'
+      );
+
+    const candidates = [];
+
+    for (const handle of handles) {
+      try {
+        const info =
+          await handle.evaluate(el => {
+            const accept =
+              (
+                el.getAttribute(
+                  'accept'
+                ) || ''
+              ).toLowerCase();
+
+            return {
+              accept,
+
+              disabled:
+                Boolean(el.disabled),
+
+              inFooter:
+                Boolean(
+                  el.closest(
+                    'footer'
+                  )
+                ),
+
+              hasImage:
+                accept.includes(
+                  'image'
+                )
+            };
+          });
+
+        if (
+          info.inFooter &&
+          !info.disabled &&
+          info.hasImage
+        ) {
+          candidates.push({
+            handle,
+            info
+          });
+        }
+      } catch (_) {}
+    }
+
+    console.log(
+      `UI_FOOTER_FILE_INPUT_CANDIDATE_COUNT=${candidates.length}`
     );
 
-  const candidates = [];
+    if (candidates.length > 1) {
+      throw new Error(
+        'UI_FOOTER_FILE_INPUT_NOT_UNIQUE'
+      );
+    }
 
-  for (const handle of handles) {
-    try {
-      const info =
-        await handle.evaluate(el => {
-          const accept =
-            (
-              el.getAttribute(
-                'accept'
-              ) || ''
-            ).toLowerCase();
+    if (candidates.length === 1) {
+      console.log(
+        'UI_FOOTER_FILE_INPUT_FOUND=YES'
+      );
 
-          const markedBefore =
-            el.getAttribute(
-              'data-wa-auto-absensi-pre-photo'
-            ) === '1';
+      console.log(
+        'UI_FOOTER_FILE_INPUT_ACCEPT=' +
+        (
+          candidates[0].info.accept ||
+          'EMPTY'
+        )
+      );
 
-          return {
-            accept,
-            markedBefore,
-            multiple:
-              Boolean(el.multiple),
+      await candidates[0].handle.uploadFile(
+        filePath
+      );
 
-            disabled:
-              Boolean(el.disabled),
+      console.log(
+        'UI_PHOTO_VIDEO_FILE_SELECTED_FALLBACK=YES'
+      );
 
-            hasImage:
-              accept.includes(
-                'image'
-              ),
+      return;
+    }
 
-            hasVideo:
-              accept.includes(
-                'video'
-              )
-          };
-        });
-
-      if (
-        info.disabled ||
-        !info.hasImage
-      ) {
-        continue;
-      }
-
-      let score = 0;
-
-      if (!info.markedBefore) {
-        score += 100;
-      }
-
-      if (
-        info.hasImage &&
-        info.hasVideo
-      ) {
-        score += 50;
-      }
-
-      if (info.multiple) {
-        score += 10;
-      }
-
-      candidates.push({
-        handle,
-        info,
-        score
-      });
-    } catch (_) {}
+    await uiSleep(250);
   }
 
-  console.log(
-    `UI_FILE_INPUT_CANDIDATE_COUNT=${candidates.length}`
-  );
-
-  if (
-    candidates.length === 0
-  ) {
-    throw new Error(
-      'UI_PHOTO_VIDEO_FILE_INPUT_FALLBACK_NOT_FOUND'
-    );
-  }
-
-  candidates.sort(
-    (a, b) =>
-      b.score - a.score
-  );
-
-  const bestScore =
-    candidates[0].score;
-
-  const best =
-    candidates.filter(
-      item =>
-        item.score === bestScore
-    );
-
-  console.log(
-    `UI_FILE_INPUT_BEST_SCORE=${bestScore}`
-  );
-
-  console.log(
-    `UI_FILE_INPUT_BEST_COUNT=${best.length}`
-  );
-
-  if (best.length !== 1) {
-    throw new Error(
-      'UI_PHOTO_VIDEO_FILE_INPUT_FALLBACK_NOT_UNIQUE'
-    );
-  }
-
-  console.log(
-    'UI_PHOTO_VIDEO_FILE_INPUT_FALLBACK=YES'
-  );
-
-  console.log(
-    'UI_PHOTO_VIDEO_FILE_INPUT_ACCEPT=' +
-    (
-      best[0].info.accept ||
-      'EMPTY'
-    )
-  );
-
-  await best[0].handle.uploadFile(
-    filePath
-  );
-
-  console.log(
-    'UI_PHOTO_VIDEO_FILE_SELECTED_FALLBACK=YES'
+  throw new Error(
+    'UI_FOOTER_FILE_INPUT_NOT_FOUND'
   );
 }
-
 async function selectPhotoVideoUi(
   page,
   filePath
@@ -761,7 +721,7 @@ async function selectPhotoVideoUi(
 
   const chooserPromise =
     page.waitForFileChooser({
-      timeout: 8000
+      timeout: 15000
     });
 
   await photoVideo.click();
