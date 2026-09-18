@@ -2,7 +2,7 @@
   "name": "wa-auto-absensi",
   "version": "1.0.0",
   "private": true,
-  "description": "Auto Check In / Check Out WhatsApp - tahap Testing",
+  "description": "Auto Check In / Check Out WhatsApp - Testing + Production",
   "type": "commonjs",
   "scripts": {
     "dry-run": "node src/dry-run.js",
@@ -13,7 +13,9 @@
     "wa:send-checkin-testing": "node src/wa-send-checkin-testing.js",
     "wa:send-checkout-testing": "node src/wa-send-checkout-testing.js",
     "attendance:listen": "node src/wa-self-chat-ingest.js",
-    "attendance:sync-once": "node src/wa-self-chat-ingest.js --sync-once"
+    "attendance:sync-once": "node src/wa-self-chat-ingest.js --sync-once",
+    "wa:send-checkin-production": "node src/wa-send-checkin-production.js",
+    "wa:send-checkout-production": "node src/wa-send-checkout-production.js"
   },
   "engines": {
     "node": ">=20"
