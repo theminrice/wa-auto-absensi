@@ -1,12 +1,6 @@
 name: WA Attendance Testing Cloud V2
 
 on:
-  schedule:
-    - cron: '0 6 * * 1-6'
-      timezone: 'Asia/Jakarta'
-    - cron: '0 17 * * 1-6'
-      timezone: 'Asia/Jakarta'
-
   workflow_dispatch:
     inputs:
       action:
