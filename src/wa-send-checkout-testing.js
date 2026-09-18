@@ -12,6 +12,7 @@ const mongoose = require('mongoose');
 
 const {
   REMOTE_AUTH_SESSION,
+  REMOTE_AUTH_BACKUP_MS,
   getRemoteAuthDataPath,
   getPuppeteerOptions,
   createMongoStore,
@@ -1337,8 +1338,139 @@ async function waitPhotoPreviewClosedUi(
   return false;
 }
 
+// WA_AUTO_ABSENSI_CHECKOUT_POST_SEND_ACK_HOLD_V1
+function checkoutOutgoingMessageKey(message) {
+  const serialized =
+    message &&
+    message.id &&
+    typeof message.id._serialized === 'string'
+      ? message.id._serialized
+      : '';
+
+  if (serialized) {
+    return serialized;
+  }
+
+  return [
+    Number(message && message.timestamp || 0),
+    normalizeUiText(message && message.body),
+    message && message.hasMedia === true ? '1' : '0'
+  ].join(':');
+}
+
+async function getMatchingOutgoingCheckoutMessages(
+  chat,
+  expectedCaption,
+  limit = 100
+) {
+  const expected =
+    normalizeUiText(expectedCaption);
+
+  const messages =
+    await chat.fetchMessages({
+      limit,
+      fromMe: true
+    });
+
+  return messages.filter(message =>
+    normalizeUiText(message.body) === expected &&
+    message.hasMedia === true
+  );
+}
+
+async function waitNewCheckoutOutgoingServerAck(
+  chat,
+  expectedCaption,
+  baselineKeys,
+  timeoutMs
+) {
+  const deadline =
+    Date.now() + timeoutMs;
+
+  let highestAck = -1;
+  let newMessageSeen = false;
+
+  while (Date.now() < deadline) {
+    try {
+      const matches =
+        await getMatchingOutgoingCheckoutMessages(
+          chat,
+          expectedCaption,
+          40
+        );
+
+      for (const message of matches) {
+        const key =
+          checkoutOutgoingMessageKey(
+            message
+          );
+
+        if (baselineKeys.has(key)) {
+          continue;
+        }
+
+        newMessageSeen = true;
+
+        const ack =
+          Number(message.ack ?? 0);
+
+        if (ack > highestAck) {
+          highestAck = ack;
+
+          console.log(
+            `CHECKOUT_NEW_MESSAGE_ACK_CURRENT=${ack}`
+          );
+        }
+
+        if (ack >= 1) {
+          console.log(
+            'CHECKOUT_NEW_MESSAGE_FOUND=YES'
+          );
+
+          console.log(
+            `CHECKOUT_SERVER_ACK_VALUE=${ack}`
+          );
+
+          return {
+            confirmed: true,
+            ack,
+            key
+          };
+        }
+      }
+    } catch (error) {
+      console.log(
+        `CHECKOUT_ACK_FETCH_ERROR=${error.message}`
+      );
+    }
+
+    await uiSleep(1000);
+  }
+
+  console.log(
+    `CHECKOUT_NEW_MESSAGE_SEEN=${
+      newMessageSeen ? 'YES' : 'NO'
+    }`
+  );
+
+  console.log(
+    `CHECKOUT_SERVER_ACK_HIGHEST=${highestAck}`
+  );
+
+  console.log(
+    'CHECKOUT_SERVER_ACK_CONFIRMED=NO'
+  );
+
+  return {
+    confirmed: false,
+    ack: highestAck,
+    key: ''
+  };
+}
+
 async function sendCheckoutPhotoViaUi(
   client,
+  targetChat,
   media,
   caption
 ) {
@@ -1432,6 +1564,24 @@ async function sendCheckoutPhotoViaUi(
       finalCaption
     );
 
+    const baselineMatches =
+      await getMatchingOutgoingCheckoutMessages(
+        targetChat,
+        finalCaption,
+        100
+      );
+
+    const baselineKeys =
+      new Set(
+        baselineMatches.map(
+          checkoutOutgoingMessageKey
+        )
+      );
+
+    console.log(
+      `CHECKOUT_BASELINE_MATCH_COUNT=${baselineKeys.size}`
+    );
+
     const clickResult =
       await clickPhotoSendUi(
         page
@@ -1439,6 +1589,9 @@ async function sendCheckoutPhotoViaUi(
 
     clicked =
       clickResult.clicked === true;
+
+    const clickedAtMs =
+      Date.now();
 
     const previewClosed =
       await waitPhotoPreviewClosedUi(
@@ -1449,12 +1602,68 @@ async function sendCheckoutPhotoViaUi(
     /*
      * Never attempt another click after
      * the irreversible send action.
+     *
+     * Keep the client alive until the new
+     * checkout media message receives a
+     * server ACK and at least one RemoteAuth
+     * backup interval can elapse after click.
      */
-    await uiSleep(5000);
+    let serverAck = {
+      confirmed: false,
+      ack: -1,
+      key: ''
+    };
+
+    if (previewClosed) {
+      serverAck =
+        await waitNewCheckoutOutgoingServerAck(
+          targetChat,
+          finalCaption,
+          baselineKeys,
+          45000
+        );
+    }
+
+    const postSendHoldTargetMs =
+      useRemoteAuth
+        ? REMOTE_AUTH_BACKUP_MS + 5000
+        : 15000;
+
+    const elapsedAfterClickMs =
+      Date.now() - clickedAtMs;
+
+    const postSendHoldRemainingMs =
+      Math.max(
+        0,
+        postSendHoldTargetMs -
+          elapsedAfterClickMs
+      );
+
+    console.log(
+      `POST_SEND_HOLD_TARGET_MS=${postSendHoldTargetMs}`
+    );
+
+    console.log(
+      `POST_SEND_HOLD_REMAINING_MS=${postSendHoldRemainingMs}`
+    );
+
+    if (postSendHoldRemainingMs > 0) {
+      await uiSleep(
+        postSendHoldRemainingMs
+      );
+    }
+
+    console.log(
+      'POST_SEND_HOLD_DONE=YES'
+    );
 
     return {
       clicked,
       previewClosed,
+      serverAckConfirmed:
+        serverAck.confirmed === true,
+      serverAckValue:
+        Number(serverAck.ack ?? -1),
       finalCaption,
       sendLabel:
         clickResult.label || '',
@@ -1930,6 +2139,7 @@ if (process.env.MONGODB_URI) {
     const uiSend = await timeout(
       sendCheckoutPhotoViaUi(
         client,
+        targetChat,
         media,
         uiCaption
       ),
@@ -1994,12 +2204,53 @@ if (process.env.MONGODB_URI) {
       );
     }
 
+    if (
+      uiSend.serverAckConfirmed !== true
+    ) {
+      console.log(
+        'UI_SEND_COMMIT_CONFIRMED=UNKNOWN'
+      );
+
+      console.log(
+        'SERVER_ACK_CONFIRMED=NO'
+      );
+
+      console.log(
+        `SERVER_ACK_VALUE=${uiSend.serverAckValue}`
+      );
+
+      console.log(
+        'MESSAGE_SENT=UNKNOWN'
+      );
+
+      console.log(
+        'MEDIA_SENT=UNKNOWN'
+      );
+
+      console.log(
+        'CAPTION_SENT=UNKNOWN'
+      );
+
+      console.log(
+        'STEP_4_1E_CHECKOUT=FAIL'
+      );
+
+      return await finish(
+        client,
+        43
+      );
+    }
+
     console.log(
       'UI_SEND_COMMIT_CONFIRMED=YES'
     );
 
     console.log(
-      'SERVER_ACK_CONFIRMED=NOT_AVAILABLE_UI_PATH'
+      'SERVER_ACK_CONFIRMED=YES'
+    );
+
+    console.log(
+      `SERVER_ACK_VALUE=${uiSend.serverAckValue}`
     );
 
     console.log('MESSAGE_SENT=YES');
