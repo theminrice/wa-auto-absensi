@@ -559,6 +559,164 @@ async function findPhotoVideoMenuUi(page) {
   return null;
 }
 
+// WA_AUTO_ABSENSI_FILECHOOSER_FALLBACK_V1
+async function markExistingFileInputsUi(page) {
+  await page.evaluate(() => {
+    for (
+      const input of
+      document.querySelectorAll(
+        'input[type="file"]'
+      )
+    ) {
+      input.setAttribute(
+        'data-wa-auto-absensi-pre-photo',
+        '1'
+      );
+    }
+  });
+}
+
+async function uploadPhotoVideoFallbackUi(
+  page,
+  filePath
+) {
+  const handles =
+    await page.$$(
+      'input[type="file"]'
+    );
+
+  const candidates = [];
+
+  for (const handle of handles) {
+    try {
+      const info =
+        await handle.evaluate(el => {
+          const accept =
+            (
+              el.getAttribute(
+                'accept'
+              ) || ''
+            ).toLowerCase();
+
+          const markedBefore =
+            el.getAttribute(
+              'data-wa-auto-absensi-pre-photo'
+            ) === '1';
+
+          return {
+            accept,
+            markedBefore,
+            multiple:
+              Boolean(el.multiple),
+
+            disabled:
+              Boolean(el.disabled),
+
+            hasImage:
+              accept.includes(
+                'image'
+              ),
+
+            hasVideo:
+              accept.includes(
+                'video'
+              )
+          };
+        });
+
+      if (
+        info.disabled ||
+        !info.hasImage
+      ) {
+        continue;
+      }
+
+      let score = 0;
+
+      if (!info.markedBefore) {
+        score += 100;
+      }
+
+      if (
+        info.hasImage &&
+        info.hasVideo
+      ) {
+        score += 50;
+      }
+
+      if (info.multiple) {
+        score += 10;
+      }
+
+      candidates.push({
+        handle,
+        info,
+        score
+      });
+    } catch (_) {}
+  }
+
+  console.log(
+    `UI_FILE_INPUT_CANDIDATE_COUNT=${candidates.length}`
+  );
+
+  if (
+    candidates.length === 0
+  ) {
+    throw new Error(
+      'UI_PHOTO_VIDEO_FILE_INPUT_FALLBACK_NOT_FOUND'
+    );
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score
+  );
+
+  const bestScore =
+    candidates[0].score;
+
+  const best =
+    candidates.filter(
+      item =>
+        item.score === bestScore
+    );
+
+  console.log(
+    `UI_FILE_INPUT_BEST_SCORE=${bestScore}`
+  );
+
+  console.log(
+    `UI_FILE_INPUT_BEST_COUNT=${best.length}`
+  );
+
+  if (best.length !== 1) {
+    throw new Error(
+      'UI_PHOTO_VIDEO_FILE_INPUT_FALLBACK_NOT_UNIQUE'
+    );
+  }
+
+  console.log(
+    'UI_PHOTO_VIDEO_FILE_INPUT_FALLBACK=YES'
+  );
+
+  console.log(
+    'UI_PHOTO_VIDEO_FILE_INPUT_ACCEPT=' +
+    (
+      best[0].info.accept ||
+      'EMPTY'
+    )
+  );
+
+  await best[0].handle.uploadFile(
+    filePath
+  );
+
+  console.log(
+    'UI_PHOTO_VIDEO_FILE_SELECTED_FALLBACK=YES'
+  );
+}
+
 async function selectPhotoVideoUi(
   page,
   filePath
@@ -593,6 +751,14 @@ async function selectPhotoVideoUi(
     'UI_PHOTO_VIDEO_MENU_FOUND=YES'
   );
 
+  /*
+   * Mark file inputs that already existed before
+   * clicking the exact Foto & Video menu item.
+   */
+  await markExistingFileInputsUi(
+    page
+  );
+
   const chooserPromise =
     page.waitForFileChooser({
       timeout: 8000
@@ -604,8 +770,27 @@ async function selectPhotoVideoUi(
     'UI_PHOTO_VIDEO_MENU_CLICKED=YES'
   );
 
-  const chooser =
-    await chooserPromise;
+  let chooser = null;
+
+  try {
+    chooser =
+      await chooserPromise;
+  } catch (error) {
+    console.log(
+      'UI_PHOTO_VIDEO_FILE_CHOOSER_FOUND=NO'
+    );
+
+    console.log(
+      'UI_PHOTO_VIDEO_FILE_CHOOSER_FALLBACK_START=YES'
+    );
+
+    await uploadPhotoVideoFallbackUi(
+      page,
+      filePath
+    );
+
+    return;
+  }
 
   console.log(
     'UI_PHOTO_VIDEO_FILE_CHOOSER_FOUND=YES'
@@ -619,7 +804,6 @@ async function selectPhotoVideoUi(
     'UI_PHOTO_VIDEO_FILE_SELECTED=YES'
   );
 }
-
 async function getPhotoPreviewUiState(page) {
   return await page.evaluate(() => {
     const visible =
