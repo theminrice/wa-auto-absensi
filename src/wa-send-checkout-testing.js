@@ -23,10 +23,6 @@ const {
 } = require('./attendance');
 
 const {
-  findOutgoingDuplicate
-} = require('./duplicate-guard');
-
-const {
   getLatestProject,
   getLatestDocumentationAfter,
   downloadDocumentation
@@ -1925,33 +1921,9 @@ if (process.env.MONGODB_URI) {
       'CAPTION_UI_FORMAT=BULLET'
     );
 
-    console.log('DUPLICATE_CHECK_START=YES');
-
-    const duplicate = await timeout(
-      findOutgoingDuplicate(
-        targetChat,
-        uiCaption,
-        {
-          limit: 100,
-          requireMedia: true
-        }
-      ),
-      60000,
-      'DUPLICATE_CHECK'
-    );
-
-    console.log(`DUPLICATE_CHECKED_COUNT=${duplicate.checked}`);
-
-    if (duplicate.found) {
-      console.log('DUPLICATE_FOUND=YES');
-      console.log('ACTION=SKIP');
-      console.log('MESSAGE_SENT=NO');
-      console.log('STEP_3_3_CHECKOUT=PASS');
-
-      return await finish(client, 0);
-    }
-
-    console.log('DUPLICATE_FOUND=NO');
+    // WA_AUTO_ABSENSI_CHECKOUT_NO_DUPLICATE_GUARD_V1
+    console.log('CHECKOUT_DUPLICATE_GUARD=DISABLED');
+    console.log('ACTION=SEND');
     console.log('SEND_START=YES');
     console.log('SEND_MODE=UI_PHOTO_VIDEO');
 
