@@ -101,6 +101,83 @@ async function ensureAttendanceIndexes(connection) {
   );
 }
 
+// WA_AUTO_ABSENSI_REPLACE_CURRENT_STORAGE_V1D
+function collectSourceMessageIds(rows) {
+  const ids = new Set();
+
+  for (const row of rows || []) {
+    const value =
+      row &&
+      row.sourceMessageId;
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (
+          typeof item === 'string' &&
+          item.trim()
+        ) {
+          ids.add(
+            item.trim()
+          );
+        }
+      }
+
+      continue;
+    }
+
+    if (
+      typeof value === 'string' &&
+      value.trim()
+    ) {
+      ids.add(
+        value.trim()
+      );
+    }
+  }
+
+  return Array.from(ids);
+}
+
+async function preserveSourceMessageIds(
+  collection,
+  rows
+) {
+  const ids =
+    collectSourceMessageIds(rows);
+
+  if (ids.length === 0) {
+    return;
+  }
+
+  const now =
+    new Date();
+
+  await collection.updateOne(
+    {
+      kind: 'ingest-dedup'
+    },
+    {
+      $setOnInsert: {
+        version: STORAGE_VERSION,
+        kind: 'ingest-dedup',
+        source: 'system',
+        createdAt: now
+      },
+      $set: {
+        updatedAt: now
+      },
+      $addToSet: {
+        sourceMessageId: {
+          $each: ids
+        }
+      }
+    },
+    {
+      upsert: true
+    }
+  );
+}
+
 async function saveProject(
   connection,
   project,
@@ -116,6 +193,67 @@ async function saveProject(
     createdAt: normalizeDate(createdAt),
     source: 'manual'
   };
+
+  const existingRows =
+    await collection
+      .find(
+        {
+          kind: 'project'
+        },
+        {
+          projection: {
+            _id: 1,
+            sourceMessageId: 1,
+            createdAt: 1
+          }
+        }
+      )
+      .sort({
+        createdAt: -1,
+        _id: -1
+      })
+      .toArray();
+
+  await preserveSourceMessageIds(
+    collection,
+    existingRows
+  );
+
+  if (existingRows.length > 0) {
+    const canonicalId =
+      existingRows[0]._id;
+
+    await collection.deleteMany({
+      kind: 'project',
+      _id: {
+        $ne: canonicalId
+      }
+    });
+
+    const result =
+      await collection.updateOne(
+        {
+          _id: canonicalId
+        },
+        {
+          $set: document,
+          $unset: {
+            sourceMessageId: ''
+          }
+        }
+      );
+
+    if (result.matchedCount !== 1) {
+      throw new Error(
+        'PROJECT_CURRENT_ROW_UPDATE_FAILED'
+      );
+    }
+
+    return {
+      ...document,
+      _id: canonicalId
+    };
+  }
 
   const result =
     await collection.insertOne(document);
@@ -188,6 +326,35 @@ async function saveDocumentation(
   const bucket =
     getDocumentBucket(connection);
 
+  const collection =
+    getInputCollection(connection);
+
+  const existingRows =
+    await collection
+      .find(
+        {
+          kind: 'documentation'
+        },
+        {
+          projection: {
+            _id: 1,
+            fileId: 1,
+            sourceMessageId: 1,
+            createdAt: 1
+          }
+        }
+      )
+      .sort({
+        createdAt: -1,
+        _id: -1
+      })
+      .toArray();
+
+  await preserveSourceMessageIds(
+    collection,
+    existingRows
+  );
+
   const fileId =
     await uploadBuffer(
       bucket,
@@ -203,9 +370,6 @@ async function saveDocumentation(
       }
     );
 
-  const collection =
-    getInputCollection(connection);
-
   const document = {
     version: STORAGE_VERSION,
     kind: 'documentation',
@@ -217,21 +381,114 @@ async function saveDocumentation(
     source: 'manual'
   };
 
-  try {
-    const result =
-      await collection.insertOne(document);
+  let storedId = null;
+  let metadataCommitted = false;
 
-    return {
-      ...document,
-      _id: result.insertedId
-    };
+  try {
+    if (existingRows.length > 0) {
+      storedId =
+        existingRows[0]._id;
+
+      await collection.deleteMany({
+        kind: 'documentation',
+        _id: {
+          $ne: storedId
+        }
+      });
+
+      const result =
+        await collection.updateOne(
+          {
+            _id: storedId
+          },
+          {
+            $set: document,
+            $unset: {
+              sourceMessageId: ''
+            }
+          }
+        );
+
+      if (result.matchedCount !== 1) {
+        throw new Error(
+          'DOCUMENTATION_CURRENT_ROW_UPDATE_FAILED'
+        );
+      }
+
+      metadataCommitted = true;
+    } else {
+      const result =
+        await collection.insertOne(
+          document
+        );
+
+      storedId =
+        result.insertedId;
+
+      metadataCommitted = true;
+    }
   } catch (error) {
-    try {
-      await bucket.delete(fileId);
-    } catch (_) {}
+    if (!metadataCommitted) {
+      try {
+        await bucket.delete(fileId);
+      } catch (_) {}
+    }
 
     throw error;
   }
+
+  try {
+    const staleFiles =
+      await bucket
+        .find({
+          'metadata.type':
+            'attendance_documentation',
+          _id: {
+            $ne: fileId
+          }
+        })
+        .toArray();
+
+    for (const staleFile of staleFiles) {
+      if (
+        !staleFile ||
+        !staleFile._id
+      ) {
+        continue;
+      }
+
+      try {
+        await bucket.delete(
+          staleFile._id
+        );
+      } catch (cleanupError) {
+        console.warn(
+          'STALE_DOCUMENTATION_FILE_DELETE_FAILED=' +
+          String(
+            cleanupError &&
+            cleanupError.message
+              ? cleanupError.message
+              : cleanupError
+          )
+        );
+      }
+    }
+  } catch (cleanupError) {
+    console.warn(
+      'STALE_DOCUMENTATION_SCAN_FAILED=' +
+      String(
+        cleanupError &&
+        cleanupError.message
+          ? cleanupError.message
+          : cleanupError
+      )
+    );
+  }
+
+  return {
+    ...document,
+    _id: storedId
+  };
 }
 
 async function getLatestProject(connection) {
