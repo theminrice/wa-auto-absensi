@@ -2,12 +2,20 @@
 
 const path = require('path');
 const mongoose = require('mongoose');
-const qrcode = require('qrcode-terminal');
 
 const {
-  Client,
-  LocalAuth
+  Client
 } = require('whatsapp-web.js');
+
+const {
+  REMOTE_AUTH_SESSION,
+  getRemoteAuthDataPath,
+  getPuppeteerOptions,
+  createMongoStore,
+  createRemoteAuth
+} = require('./remote-auth');
+
+// WA_AUTO_ABSENSI_INGEST_REMOTEAUTH_CATCHUP_V1
 
 const {
   INPUT_COLLECTION,
@@ -16,14 +24,25 @@ const {
   saveDocumentation
 } = require('./attendance-input-store');
 
-const CLIENT_ID = 'wa-auto-absensi-ingest';
-
 let client = null;
 let shuttingDown = false;
 let ingestQueue = Promise.resolve();
+let readyPipelineStarted = false;
 
 const selfIds = new Set();
 const processedMessageIds = new Set();
+
+// WA_AUTO_ABSENSI_INGEST_CATCHUP_STABILITY_V2
+const REMOTE_POST_READY_SETTLE_MS = 15000;
+const STARTUP_CATCHUP_MAX_SWEEPS = 3;
+const STARTUP_CATCHUP_RETRY_MS = 5000;
+
+function sleep(ms) {
+  return new Promise(
+    resolve =>
+      setTimeout(resolve, ms)
+  );
+}
 
 function requireMongoUri() {
   const uri = process.env.MONGODB_URI;
@@ -549,6 +568,236 @@ async function handleMessage(message) {
   }
 }
 
+async function startupCatchupSelfChat() {
+  console.log(
+    'SELF_CHAT_CATCHUP_START=YES'
+  );
+
+  const candidateIds =
+    Array.from(selfIds)
+      .filter(id =>
+        typeof id === 'string' &&
+        (
+          id.endsWith('@c.us') ||
+          id.endsWith('@lid')
+        )
+      );
+
+  console.log(
+    `SELF_CHAT_CATCHUP_ID_COUNT=${candidateIds.length}`
+  );
+
+  if (candidateIds.length === 0) {
+    throw new Error(
+      'SELF_CHAT_CATCHUP_NO_SELF_ID'
+    );
+  }
+
+  const seenMessageIds =
+    new Set();
+
+  let successfulChatCount = 0;
+  let fetchedCount = 0;
+  let relevantCount = 0;
+
+  for (const chatId of candidateIds) {
+    let chat = null;
+
+    try {
+      chat =
+        await client.getChatById(
+          chatId
+        );
+    } catch (error) {
+      console.log(
+        'SELF_CHAT_CATCHUP_CHAT_LOOKUP=' +
+        'BEST_EFFORT_FAIL'
+      );
+
+      continue;
+    }
+
+    if (
+      !chat ||
+      typeof chat.fetchMessages !==
+        'function'
+    ) {
+      continue;
+    }
+
+    let messages = [];
+
+    try {
+      messages =
+        await chat.fetchMessages({
+          limit: 50
+        });
+    } catch (error) {
+      console.log(
+        'SELF_CHAT_CATCHUP_FETCH=' +
+        'BEST_EFFORT_FAIL'
+      );
+
+      continue;
+    }
+
+    successfulChatCount += 1;
+
+    if (!Array.isArray(messages)) {
+      continue;
+    }
+
+    fetchedCount +=
+      messages.length;
+
+    messages.sort(
+      (a, b) =>
+        Number(
+          a && a.timestamp || 0
+        ) -
+        Number(
+          b && b.timestamp || 0
+        )
+    );
+
+    for (const message of messages) {
+      const messageId =
+        getMessageId(message);
+
+      if (
+        messageId &&
+        seenMessageIds.has(messageId)
+      ) {
+        continue;
+      }
+
+      if (messageId) {
+        seenMessageIds.add(
+          messageId
+        );
+      }
+
+      const selfChat =
+        await isSelfChatMessage(
+          message
+        );
+
+      if (!selfChat) {
+        continue;
+      }
+
+      const project =
+        parseProject(
+          message.body
+        );
+
+      const documentation =
+        isDocumentationImage(
+          message
+        );
+
+      if (
+        !project &&
+        !documentation
+      ) {
+        continue;
+      }
+
+      relevantCount += 1;
+
+      await handleMessage(
+        message
+      );
+    }
+  }
+
+  console.log(
+    `SELF_CHAT_CATCHUP_CHAT_COUNT=${successfulChatCount}`
+  );
+
+  console.log(
+    `SELF_CHAT_CATCHUP_FETCHED_COUNT=${fetchedCount}`
+  );
+
+  console.log(
+    `SELF_CHAT_CATCHUP_RELEVANT_COUNT=${relevantCount}`
+  );
+
+  if (successfulChatCount === 0) {
+    throw new Error(
+      'SELF_CHAT_CATCHUP_CHAT_NOT_FOUND'
+    );
+  }
+
+  console.log(
+    'SELF_CHAT_CATCHUP_COMPLETE=YES'
+  );
+}
+async function startupCatchupSelfChatStable() {
+  let successfulSweeps = 0;
+  let lastError = null;
+
+  for (
+    let attempt = 1;
+    attempt <= STARTUP_CATCHUP_MAX_SWEEPS;
+    attempt += 1
+  ) {
+    console.log(
+      `SELF_CHAT_CATCHUP_SWEEP=${attempt}`
+    );
+
+    try {
+      await startupCatchupSelfChat();
+
+      successfulSweeps += 1;
+
+      console.log(
+        `SELF_CHAT_CATCHUP_SWEEP_${attempt}=PASS`
+      );
+    } catch (error) {
+      lastError = error;
+
+      console.log(
+        `SELF_CHAT_CATCHUP_SWEEP_${attempt}=FAIL`
+      );
+
+      console.log(
+        'SELF_CHAT_CATCHUP_SWEEP_ERROR=' +
+        error.message
+      );
+    }
+
+    if (
+      attempt <
+      STARTUP_CATCHUP_MAX_SWEEPS
+    ) {
+      console.log(
+        `SELF_CHAT_CATCHUP_RETRY_WAIT_MS=${STARTUP_CATCHUP_RETRY_MS}`
+      );
+
+      await sleep(
+        STARTUP_CATCHUP_RETRY_MS
+      );
+    }
+  }
+
+  console.log(
+    `SELF_CHAT_CATCHUP_SUCCESSFUL_SWEEPS=${successfulSweeps}`
+  );
+
+  if (successfulSweeps === 0) {
+    throw (
+      lastError ||
+      new Error(
+        'SELF_CHAT_CATCHUP_ALL_SWEEPS_FAILED'
+      )
+    );
+  }
+
+  console.log(
+    'SELF_CHAT_CATCHUP_STABLE=YES'
+  );
+}
 async function shutdown(reason) {
   if (shuttingDown) {
     return;
@@ -754,44 +1003,46 @@ async function main() {
     'ATTENDANCE_INDEX_READY=YES'
   );
 
-  const puppeteer = {
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox'
-    ]
-  };
+  const remoteDataPath =
+    getRemoteAuthDataPath();
 
-  if (
-    process.env.CHROME_PATH &&
-    process.env.CHROME_PATH.trim()
-  ) {
-    puppeteer.executablePath =
-      process.env.CHROME_PATH.trim();
-  }
+  const remoteStore =
+    createMongoStore(
+      mongoose,
+      remoteDataPath
+    );
+
+  console.log(
+    'AUTH_MODE=REMOTE'
+  );
+
+  console.log(
+    `REMOTE_AUTH_SESSION=${REMOTE_AUTH_SESSION}`
+  );
 
   client =
     new Client({
       authStrategy:
-        new LocalAuth({
-          clientId: CLIENT_ID
-        }),
-      puppeteer
+        createRemoteAuth(
+          remoteStore,
+          remoteDataPath
+        ),
+
+      puppeteer:
+        getPuppeteerOptions()
     });
 
-  client.on('qr', qr => {
-    console.log(
-      'QR_REQUIRED=YES'
+  client.on('qr', async () => {
+    console.error(
+      'REMOTE_AUTH_QR_FORBIDDEN=YES'
     );
 
-    qrcode.generate(
-      qr,
-      {
-        small: true
-      }
+    process.exitCode = 1;
+
+    await shutdown(
+      'REMOTE_AUTH_QR_FORBIDDEN'
     );
   });
-
   client.on('authenticated', () => {
     console.log(
       'WHATSAPP_AUTHENTICATED=YES'
@@ -804,7 +1055,31 @@ async function main() {
         'WHATSAPP_READY=YES'
       );
 
+      if (readyPipelineStarted) {
+        console.log(
+          'READY_REENTRY_IGNORED=YES'
+        );
+
+        return;
+      }
+
+      readyPipelineStarted = true;
+
+      console.log(
+        `REMOTE_POST_READY_SETTLE_MS=${REMOTE_POST_READY_SETTLE_MS}`
+      );
+
+      await sleep(
+        REMOTE_POST_READY_SETTLE_MS
+      );
+
+      console.log(
+        'REMOTE_POST_READY_SETTLE_DONE=YES'
+      );
+
       await resolveSelfIds();
+
+      await startupCatchupSelfChatStable();
 
       console.log(
         'SELF_CHAT_INGEST_LISTENER_READY=YES'
