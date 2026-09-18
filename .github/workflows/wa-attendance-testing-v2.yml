@@ -366,6 +366,40 @@ jobs:
           echo "ATLAS_IP_ACTIVATION=PASS"
           echo "ATLAS_DYNAMIC_IP_READY=YES"
 
+      # WA_AUTO_ABSENSI_SYNC_ONCE_BEFORE_SEND_V1
+      - name: Sync latest self-chat attendance inputs
+        shell: bash
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth
+          TZ: Asia/Jakarta
+        run: |
+          set -Eeuo pipefail
+
+          : "${MONGODB_URI:?MONGODB_URI missing}"
+
+          mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
+
+          rm -f attendance-sync.log
+
+          npm run attendance:sync-once \
+            2>&1 |
+            tee attendance-sync.log
+
+          grep -Fxq \
+            'SELF_CHAT_CATCHUP_STABLE=YES' \
+            attendance-sync.log
+
+          grep -Fxq \
+            'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS' \
+            attendance-sync.log
+
+          grep -Fxq \
+            'ATTENDANCE_SYNC_ONCE=PASS' \
+            attendance-sync.log
+
+          echo "ATTENDANCE_SYNC_BEFORE_SEND=PASS"
+
       - name: Run Testing attendance sender
         shell: bash
         env:

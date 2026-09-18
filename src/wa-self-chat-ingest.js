@@ -29,6 +29,10 @@ let shuttingDown = false;
 let ingestQueue = Promise.resolve();
 let readyPipelineStarted = false;
 
+// WA_AUTO_ABSENSI_SYNC_ONCE_V1
+const syncOnceMode =
+  process.argv.includes('--sync-once');
+
 const selfIds = new Set();
 const processedMessageIds = new Set();
 
@@ -1081,6 +1085,23 @@ async function main() {
 
       await startupCatchupSelfChatStable();
 
+      if (syncOnceMode) {
+        console.log(
+          'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS'
+        );
+
+        await shutdown(
+          'SYNC_ONCE_COMPLETE'
+        );
+
+        console.log(
+          'ATTENDANCE_SYNC_ONCE=PASS'
+        );
+
+        process.exit(0);
+        return;
+      }
+
       console.log(
         'SELF_CHAT_INGEST_LISTENER_READY=YES'
       );
@@ -1089,6 +1110,18 @@ async function main() {
         `LISTENER_READY_ERROR=${error.message}`
       );
 
+      if (syncOnceMode) {
+        console.error(
+          'ATTENDANCE_SYNC_ONCE=FAIL'
+        );
+
+        await shutdown(
+          'SYNC_ONCE_READY_ERROR'
+        );
+
+        process.exit(1);
+        return;
+      }
       process.exitCode = 1;
     }
   });
