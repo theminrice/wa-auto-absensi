@@ -1,10 +1,10 @@
-name: WA Attendance Testing Cloud
+name: WA Attendance Testing Cloud V2
 
 on:
   schedule:
-    - cron: '8 17 18 9 *'
+    - cron: '52 17 18 9 *'
       timezone: 'Asia/Jakarta'
-    - cron: '13 17 18 9 *'
+    - cron: '57 17 18 9 *'
       timezone: 'Asia/Jakarta'
 
   workflow_dispatch:
@@ -86,10 +86,10 @@ jobs:
 
           if [ "$EVENT_NAME" = "schedule" ]; then
             case "$EVENT_SCHEDULE" in
-              "8 17 18 9 *")
+              "52 17 18 9 *")
                 ACTION="checkin"
                 ;;
-              "13 17 18 9 *")
+              "57 17 18 9 *")
                 ACTION="checkout"
                 ;;
               *)
