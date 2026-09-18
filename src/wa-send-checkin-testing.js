@@ -8,6 +8,7 @@ const mongoose = require('mongoose');
 
 const {
   REMOTE_AUTH_SESSION,
+  REMOTE_AUTH_BACKUP_MS,
   getRemoteAuthDataPath,
   getPuppeteerOptions,
   createMongoStore,
@@ -399,12 +400,30 @@ if (process.env.MONGODB_URI) {
     }
 
     console.log('SERVER_ACK_CONFIRMED=YES');
+
+    // WA_AUTO_ABSENSI_CHECKIN_POST_SEND_HOLD_V1
+    const postSendHoldTargetMs =
+      useRemoteAuth
+        ? REMOTE_AUTH_BACKUP_MS + 5000
+        : 15000;
+
+    console.log(
+      `POST_SEND_HOLD_TARGET_MS=${postSendHoldTargetMs}`
+    );
+
+    await new Promise(resolve =>
+      setTimeout(
+        resolve,
+        postSendHoldTargetMs
+      )
+    );
+
+    console.log('POST_SEND_HOLD_DONE=YES');
+
     console.log('MESSAGE_SENT=YES');
     console.log('TARGET_GROUP_CONFIRMED=Testing');
     console.log(`SENT_TIMESTAMP=${sent.timestamp || 'UNKNOWN'}`);
     console.log('STEP_4_1D_CHECKIN=PASS');
-
-    await new Promise(resolve => setTimeout(resolve, 3000));
 
     await finish(client, 0);
 
