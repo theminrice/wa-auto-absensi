@@ -44,4 +44,6 @@ const checkOut = buildCheckOut({
 assert(checkOut.includes('Melanjutkan audit sekuritas backend✅'));
 assert(checkOut.includes('Pulang✅'));
 
+require('./attendance-leave.test');
+
 console.log('TESTS=PASS');
