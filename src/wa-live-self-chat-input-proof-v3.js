@@ -409,7 +409,7 @@ async function cleanupStaleProjectProofMessages(
     );
 
   console.log(
-    \`LIVE_PROOF_STALE_PROJECT_COUNT=\${stale.length}\`
+    `LIVE_PROOF_STALE_PROJECT_COUNT=${stale.length}`
   );
 
   for (const message of stale) {
@@ -475,7 +475,7 @@ async function waitForStableClient() {
   }
 
   console.log(
-    \`LIVE_PROOF_CLIENT_STATE_1=\${state || 'UNKNOWN'}\`
+    `LIVE_PROOF_CLIENT_STATE_1=${state || 'UNKNOWN'}`
   );
 
   if (state === 'CONNECTED') {
@@ -492,7 +492,7 @@ async function waitForStableClient() {
     await client.getState();
 
   console.log(
-    \`LIVE_PROOF_CLIENT_STATE_2=\${state || 'UNKNOWN'}\`
+    `LIVE_PROOF_CLIENT_STATE_2=${state || 'UNKNOWN'}`
   );
 
   if (state !== 'CONNECTED') {
@@ -609,7 +609,7 @@ async function sendProjectAuditAware(
     attempt += 1
   ) {
     console.log(
-      \`LIVE_PROOF_PROJECT_SEND_ATTEMPT=\${attempt}\`
+      `LIVE_PROOF_PROJECT_SEND_ATTEMPT=${attempt}`
     );
 
     try {
@@ -624,7 +624,7 @@ async function sendProjectAuditAware(
       }
     } catch (error) {
       console.log(
-        \`LIVE_PROOF_PROJECT_SEND_ATTEMPT_\${attempt}_ERROR=\${error.message}\`
+        `LIVE_PROOF_PROJECT_SEND_ATTEMPT_${attempt}_ERROR=${error.message}`
       );
     }
 
@@ -638,14 +638,14 @@ async function sendProjectAuditAware(
 
     if (found) {
       console.log(
-        \`LIVE_PROOF_PROJECT_SEND_ATTEMPT_\${attempt}_RECOVERED_FROM_CHAT=YES\`
+        `LIVE_PROOF_PROJECT_SEND_ATTEMPT_${attempt}_RECOVERED_FROM_CHAT=YES`
       );
 
       return found;
     }
 
     console.log(
-      \`LIVE_PROOF_PROJECT_SEND_ATTEMPT_\${attempt}_DELIVERED=NO\`
+      `LIVE_PROOF_PROJECT_SEND_ATTEMPT_${attempt}_DELIVERED=NO`
     );
 
     if (attempt === 1) {
@@ -677,7 +677,7 @@ async function sendImageAuditAware(
     attempt += 1
   ) {
     console.log(
-      \`LIVE_PROOF_IMAGE_SEND_ATTEMPT=\${attempt}\`
+      `LIVE_PROOF_IMAGE_SEND_ATTEMPT=${attempt}`
     );
 
     try {
@@ -695,7 +695,7 @@ async function sendImageAuditAware(
       }
     } catch (error) {
       console.log(
-        \`LIVE_PROOF_IMAGE_SEND_ATTEMPT_\${attempt}_ERROR=\${error.message}\`
+        `LIVE_PROOF_IMAGE_SEND_ATTEMPT_${attempt}_ERROR=${error.message}`
       );
     }
 
@@ -710,14 +710,14 @@ async function sendImageAuditAware(
 
     if (found) {
       console.log(
-        \`LIVE_PROOF_IMAGE_SEND_ATTEMPT_\${attempt}_RECOVERED_FROM_CHAT=YES\`
+        `LIVE_PROOF_IMAGE_SEND_ATTEMPT_${attempt}_RECOVERED_FROM_CHAT=YES`
       );
 
       return found;
     }
 
     console.log(
-      \`LIVE_PROOF_IMAGE_SEND_ATTEMPT_\${attempt}_DELIVERED=NO\`
+      `LIVE_PROOF_IMAGE_SEND_ATTEMPT_${attempt}_DELIVERED=NO`
     );
 
     if (attempt === 1) {
