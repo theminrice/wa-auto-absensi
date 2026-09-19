@@ -146,7 +146,15 @@ jobs:
               "$source"
 
             grep -Fq \
-              "createRemoteAuth" \
+              "require('./remote-auth-v3')" \
+              "$source"
+
+            grep -Fq \
+              "createRemoteAuthV3" \
+              "$source"
+
+            grep -Fq \
+              "REMOTE_AUTH_VERSION=V3" \
               "$source"
 
             grep -Fq \
@@ -176,8 +184,19 @@ jobs:
             exit 24
           fi
 
+          if grep -Fq \
+            "require('./remote-auth')" \
+            src/wa-send-checkin-production.js \
+            src/wa-send-checkout-production.js
+          then
+            echo "PRODUCTION_V2_IMPORT_REMAINS=YES"
+            exit 25
+          fi
+
           echo "HARDCODED_GROUP_ID=NO"
           echo "TESTING_GROUP_REFERENCE=NO"
+          echo "PRODUCTION_V2_IMPORT_REMAINS=NO"
+          echo "PRODUCTION_REMOTEAUTH_VERSION=V3"
           echo "PRODUCTION_SOURCE_GUARD=PASS"
 
       # WA_AUTO_ABSENSI_ATLAS_DYNAMIC_IP_ADD_V1
@@ -371,7 +390,7 @@ jobs:
         shell: bash
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth-v3
           TZ: Asia/Jakarta
         run: |
           set -Eeuo pipefail
@@ -382,9 +401,13 @@ jobs:
 
           rm -f attendance-sync.log
 
-          npm run attendance:sync-once \
+          npm run attendance:sync-once-production-v3 \
             2>&1 |
             tee attendance-sync.log
+
+          grep -Fxq \
+            'REMOTE_AUTH_VERSION=V3' \
+            attendance-sync.log
 
           grep -Fxq \
             'SELF_CHAT_CATCHUP_STABLE=YES' \
@@ -404,7 +427,7 @@ jobs:
         shell: bash
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth-v3
           TZ: Asia/Jakarta
         run: |
           set -Eeuo pipefail
@@ -446,6 +469,10 @@ jobs:
 
           grep -Fxq \
             'AUTH_MODE=REMOTE' \
+            attendance.log
+
+          grep -Fxq \
+            'REMOTE_AUTH_VERSION=V3' \
             attendance.log
 
           grep -Fxq \
@@ -611,7 +638,7 @@ jobs:
           set -Eeuo pipefail
 
           rm -rf \
-            "${RUNNER_TEMP}/wa-auto-absensi-remoteauth"
+            "${RUNNER_TEMP}/wa-auto-absensi-remoteauth-v3"
 
           rm -f \
             attendance.log
