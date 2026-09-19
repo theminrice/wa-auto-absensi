@@ -180,7 +180,7 @@ async function main() {
   const candidateWorkflow = fs.readFileSync(
     path.join(
       __dirname,
-      '../.github/workflows/wa-one-session-candidate-proof-testing.yml'
+      '../.github/workflows/wa-production-v3-all-proof-testing.yml'
     ),
     'utf8'
   );
@@ -214,6 +214,30 @@ async function main() {
     ),
     false,
     'No extra standalone Palelu sync in candidate'
+  );
+
+  assert.equal(
+    candidateWorkflow.includes(
+      'group: wa-attendance-production-cloud'
+    ),
+    true,
+    'Share production concurrency lock to avoid session conflicts'
+  );
+
+  assert.equal(
+    candidateWorkflow.includes(
+      "if: github.ref == 'refs/heads/feat/palelu-one-session-candidate-v1'"
+    ),
+    true,
+    'Fail closed when dispatched on main or another branch'
+  );
+
+  assert.equal(
+    candidateWorkflow.includes(
+      'FULL_PROOF_TOTAL_REAL_SENDS=2'
+    ),
+    true,
+    'At most exactly two proof sends verified'
   );
 
   const productionWorkflow = fs.readFileSync(
