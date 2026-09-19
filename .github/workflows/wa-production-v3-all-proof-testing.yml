@@ -528,8 +528,13 @@ jobs:
           test -f v3-e2e-proof.log
 
           grep -Fxq 'P_AND_P_COLON_PROOF=PASS' v3-input-parser-proof.log
-          grep -Fxq 'E2E_PROOF_SYNC=PASS' v3-proof-sync.log
-          grep -Fxq 'FULL_PROOF_CHECKIN=PASS' <(printf '%s\n' 'FULL_PROOF_CHECKIN=PASS') || true
+
+          grep -Fxq 'REMOTE_AUTH_VERSION=V3' v3-proof-sync.log
+          grep -Fxq 'REMOTE_V3_ACTIVE_RESTORE=PASS' v3-proof-sync.log
+          grep -Fxq 'SELF_CHAT_CATCHUP_STABLE=YES' v3-proof-sync.log
+          grep -Fxq 'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS' v3-proof-sync.log
+          grep -Fxq 'ATTENDANCE_SYNC_ONCE=PASS' v3-proof-sync.log
+
           grep -Fxq 'E2E_PROOF_CHECKIN=PASS' v3-checkin-proof.log
           grep -Fxq 'E2E_PROOF=PASS' v3-e2e-proof.log
 
