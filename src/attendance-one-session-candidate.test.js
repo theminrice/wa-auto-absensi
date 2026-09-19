@@ -139,6 +139,83 @@ async function main() {
     );
   }
 
+  const proofSenders = [
+    'wa-send-checkin-v3-proof-testing.js',
+    'wa-send-checkout-v3-proof-testing.js'
+  ];
+
+  for (const senderPath of proofSenders) {
+    const source = fs.readFileSync(
+      path.join(__dirname, senderPath),
+      'utf8'
+    );
+
+    assert.equal(
+      source.includes("EXPECTED_GROUP_NAME = 'Testing'"),
+      true,
+      senderPath + ': testing target required'
+    );
+
+    assert.equal(
+      source.includes('Aktif Tim Magang OCN'),
+      false,
+      senderPath + ': main group forbidden'
+    );
+
+    assert.equal(
+      (source.match(
+        /await syncPaleluWithClient\(client\);/g
+      ) || []).length,
+      1,
+      senderPath + ': exactly one Palelu sync'
+    );
+
+    assert.ok(
+      source.indexOf('await syncPaleluWithClient(client);') <
+      source.indexOf("console.log('SEND_START=YES');"),
+      senderPath + ': Palelu before SEND'
+    );
+  }
+
+  const candidateWorkflow = fs.readFileSync(
+    path.join(
+      __dirname,
+      '../.github/workflows/wa-one-session-candidate-proof-testing.yml'
+    ),
+    'utf8'
+  );
+
+  for (const marker of [
+    "refs/heads/feat/palelu-one-session-candidate-v1",
+    'Testing-One-Session-V1',
+    'ONE_SESSION_STANDALONE_SYNC=NO',
+    'ONE_SESSION_TESTING_FINAL=PASS',
+    'FULL_PROOF_MAIN_GROUP_TOUCHED=NO',
+    'ATLAS_IP_CLEANUP=PASS'
+  ]) {
+    assert.equal(
+      candidateWorkflow.includes(marker),
+      true,
+      'Candidate proof marker missing: ' + marker
+    );
+  }
+
+  assert.equal(
+    (candidateWorkflow.match(
+      /ATTENDANCE_ONE_SESSION_CANDIDATE: 'YES'/g
+    ) || []).length,
+    2,
+    'Only Testing senders opt into one-session mode'
+  );
+
+  assert.equal(
+    candidateWorkflow.includes(
+      'npm run attendance:sync-once-production-v3'
+    ),
+    false,
+    'No extra standalone Palelu sync in candidate'
+  );
+
   const productionWorkflow = fs.readFileSync(
     path.join(
       __dirname,
@@ -168,6 +245,8 @@ async function main() {
   console.log('ONE_SESSION_MONGODB_GUARD=PASS');
   console.log('ONE_SESSION_BEFORE_SEND=PASS');
   console.log('ONE_SESSION_BOTH_SENDERS=PASS');
+  console.log('ONE_SESSION_TESTING_PROOFS_LOCKED=PASS');
+  console.log('ONE_SESSION_TESTING_WORKFLOW_STATIC_GUARD=PASS');
   console.log('ONE_SESSION_BASELINE_WORKFLOW_PRESERVED=YES');
   console.log('ONE_SESSION_WHATSAPP_SEND=NO');
   console.log('ONE_SESSION_RUNTIME_E2E=NOT_TESTED');
