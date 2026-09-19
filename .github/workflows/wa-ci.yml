@@ -50,6 +50,7 @@ jobs:
           node --check src/remote-auth-v3.js
           node --check src/wa-remote-auth-v3-bootstrap.js
           node --check src/wa-remote-auth-v3-health.js
+          node --check src/wa-remote-auth-v3-seed-last-good.js
           echo "SOURCE_SYNTAX=PASS"
 
       - name: Verify RemoteAuth V3 no-send guards
@@ -60,7 +61,8 @@ jobs:
           for source in \
             src/remote-auth-v3.js \
             src/wa-remote-auth-v3-bootstrap.js \
-            src/wa-remote-auth-v3-health.js
+            src/wa-remote-auth-v3-health.js \
+            src/wa-remote-auth-v3-seed-last-good.js
           do
             if grep -Fq 'sendMessage(' "$source"; then
               echo "REMOTE_V3_SEND_CALL_FOUND=$source"
@@ -91,6 +93,10 @@ jobs:
           grep -Fq \
             'REMOTE_V3_HEALTH=PASS' \
             src/wa-remote-auth-v3-health.js
+
+          grep -Fq \
+            'REMOTE_V3_LAST_GOOD_SEED_WORKFLOW=PASS' \
+            src/wa-remote-auth-v3-seed-last-good.js
 
           echo "REMOTE_V3_SEND_CALL_FOUND=NO"
           echo "REMOTE_V3_STATIC_GUARD=PASS"
