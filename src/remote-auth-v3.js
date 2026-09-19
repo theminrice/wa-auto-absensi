@@ -220,6 +220,9 @@ function createHardenedRemoteAuthV3Store(
   let saveQueue =
     Promise.resolve();
 
+  let shutdownStarted =
+    false;
+
   async function snapshotExists(
     session
   ) {
@@ -551,6 +554,19 @@ function createHardenedRemoteAuthV3Store(
     function queuedHardenedSave(
       options
     ) {
+      if (
+        shutdownStarted &&
+        options &&
+        options.session ===
+          REMOTE_AUTH_V3_ACTIVE_SESSION
+      ) {
+        console.log(
+          'REMOTE_V3_SAVE_SKIPPED_SHUTDOWN=YES'
+        );
+
+        return Promise.resolve();
+      }
+
       const operation =
         saveQueue.then(
           () =>
@@ -565,6 +581,23 @@ function createHardenedRemoteAuthV3Store(
         );
 
       return operation;
+    };
+
+  baseStore.beginShutdownAndDrain =
+    async function beginShutdownAndDrain() {
+      shutdownStarted = true;
+
+      console.log(
+        'REMOTE_V3_SHUTDOWN_STARTED=YES'
+      );
+
+      await saveQueue;
+
+      console.log(
+        'REMOTE_V3_SAVE_QUEUE_DRAINED=YES'
+      );
+
+      return true;
     };
 
   baseStore.extract =
