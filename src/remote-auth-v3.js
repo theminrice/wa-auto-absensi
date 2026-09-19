@@ -759,6 +759,38 @@ function createHardenedRemoteAuthV3Store(
       }
     };
 
+  baseStore.seedLastGoodFromActive =
+    async function seedLastGoodFromActive() {
+      const active =
+        await verifyStoredSnapshot(
+          REMOTE_AUTH_V3_ACTIVE_SESSION,
+          'ACTIVE_FOR_LAST_GOOD_SEED'
+        );
+
+      try {
+        const seeded =
+          await saveZipAsSession(
+            active.zipPath,
+            REMOTE_AUTH_V3_LAST_GOOD_SESSION,
+            'LAST_GOOD_SEED'
+          );
+
+        await rmTemp(
+          seeded.temp
+        );
+
+        console.log(
+          'REMOTE_V3_LAST_GOOD_SEED=PASS'
+        );
+
+        return true;
+      } finally {
+        await rmTemp(
+          active.temp
+        );
+      }
+    };
+
   baseStore.verifyActiveSnapshot =
     async function verifyActiveSnapshot() {
       const activeExists =
