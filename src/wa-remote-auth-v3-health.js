@@ -145,7 +145,7 @@ async function main() {
       );
 
       console.log(
-        \`REMOTE_V3_HEALTH_AUTH_FAILURE_MESSAGE=\${message}\`
+        `REMOTE_V3_HEALTH_AUTH_FAILURE_MESSAGE=${message}`
       );
 
       console.log(
@@ -177,7 +177,7 @@ async function main() {
         );
 
         console.log(
-          \`REMOTE_V3_HEALTH_QR_SEEN=\${qrSeen ? 'YES' : 'NO'}\`
+          `REMOTE_V3_HEALTH_QR_SEEN=${qrSeen ? 'YES' : 'NO'}`
         );
 
         if (qrSeen) {
@@ -201,7 +201,7 @@ async function main() {
         );
 
         console.log(
-          \`REMOTE_V3_HEALTH_ERROR=\${error.message}\`
+          `REMOTE_V3_HEALTH_ERROR=${error.message}`
         );
 
         console.log(
@@ -248,7 +248,7 @@ main()
       );
 
       console.log(
-        \`REMOTE_V3_HEALTH_STARTUP_ERROR_MESSAGE=\${error.message}\`
+        `REMOTE_V3_HEALTH_STARTUP_ERROR_MESSAGE=${error.message}`
       );
 
       console.log(
