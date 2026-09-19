@@ -372,6 +372,15 @@ jobs:
 
           : "${MONGODB_URI:?MONGODB_URI missing}"
 
+          # WA_AUTO_ABSENSI_ONE_SESSION_REMOTE_DATA_DIR_FIX_V1
+          # The baseline standalone sync used to create this directory.
+          # A new one-session runner must create it before RemoteAuth
+          # extracts its ZIP; this starts no second WhatsApp client.
+          : "${WWEBJS_REMOTE_DATA_PATH:?WWEBJS_REMOTE_DATA_PATH missing}"
+          mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
+          test -d "$WWEBJS_REMOTE_DATA_PATH"
+          echo "ONE_SESSION_REMOTE_DATA_DIR_READY=YES"
+
           echo "FULL_PROOF_CHECKIN_START=YES"
           echo "FULL_PROOF_TARGET=Testing"
           echo "FULL_PROOF_MAIN_GROUP_ALLOWED=NO"
@@ -450,6 +459,11 @@ jobs:
           set -Eeuo pipefail
 
           : "${MONGODB_URI:?MONGODB_URI missing}"
+
+          : "${WWEBJS_REMOTE_DATA_PATH:?WWEBJS_REMOTE_DATA_PATH missing}"
+          mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
+          test -d "$WWEBJS_REMOTE_DATA_PATH"
+          echo "ONE_SESSION_REMOTE_DATA_DIR_READY=YES"
 
           echo "E2E_PROOF_SEND_START=YES"
           echo "E2E_PROOF_TARGET=Testing"
