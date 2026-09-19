@@ -51,6 +51,7 @@ jobs:
           node --check src/wa-remote-auth-v3-bootstrap.js
           node --check src/wa-remote-auth-v3-health.js
           node --check src/wa-remote-auth-v3-seed-last-good.js
+          node --check src/wa-self-chat-ingest-production-v3.js
           echo "SOURCE_SYNTAX=PASS"
 
       - name: Verify RemoteAuth V3 no-send guards
@@ -100,6 +101,47 @@ jobs:
 
           echo "REMOTE_V3_SEND_CALL_FOUND=NO"
           echo "REMOTE_V3_STATIC_GUARD=PASS"
+
+      - name: Verify Production RemoteAuth V3 cutover guards
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          for source in \
+            src/wa-send-checkin-production.js \
+            src/wa-send-checkout-production.js \
+            src/wa-self-chat-ingest-production-v3.js
+          do
+            grep -Fq \
+              "require('./remote-auth-v3')" \
+              "$source"
+
+            grep -Fq \
+              'REMOTE_AUTH_VERSION=V3' \
+              "$source"
+          done
+
+          if grep -Fq \
+            "require('./remote-auth')" \
+            src/wa-send-checkin-production.js \
+            src/wa-send-checkout-production.js \
+            src/wa-self-chat-ingest-production-v3.js
+          then
+            echo "PRODUCTION_V2_IMPORT_REMAINS=YES"
+            exit 31
+          fi
+
+          if grep -Fq \
+            'sendMessage(' \
+            src/wa-self-chat-ingest-production-v3.js
+          then
+            echo "PRODUCTION_V3_SYNC_SEND_CALL=YES"
+            exit 32
+          fi
+
+          echo "PRODUCTION_V2_IMPORT_REMAINS=NO"
+          echo "PRODUCTION_V3_SYNC_SEND_CALL=NO"
+          echo "PRODUCTION_REMOTEAUTH_V3_STATIC_GUARD=PASS"
 
       - name: Safe result
         run: |
