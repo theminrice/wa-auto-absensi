@@ -47,7 +47,53 @@ jobs:
           node --check src/wa-send-checkout-testing.js
           node --check src/wa-send-checkin-production.js
           node --check src/wa-send-checkout-production.js
+          node --check src/remote-auth-v3.js
+          node --check src/wa-remote-auth-v3-bootstrap.js
+          node --check src/wa-remote-auth-v3-health.js
           echo "SOURCE_SYNTAX=PASS"
+
+      - name: Verify RemoteAuth V3 no-send guards
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          for source in \
+            src/remote-auth-v3.js \
+            src/wa-remote-auth-v3-bootstrap.js \
+            src/wa-remote-auth-v3-health.js
+          do
+            if grep -Fq 'sendMessage(' "$source"; then
+              echo "REMOTE_V3_SEND_CALL_FOUND=$source"
+              exit 30
+            fi
+          done
+
+          grep -Fq \
+            'REMOTE_AUTH_V3_CANDIDATE_SESSION' \
+            src/remote-auth-v3.js
+
+          grep -Fq \
+            'REMOTE_AUTH_V3_LAST_GOOD_SESSION' \
+            src/remote-auth-v3.js
+
+          grep -Fq \
+            'REMOTE_V3_CANDIDATE_ROUNDTRIP=PASS' \
+            src/remote-auth-v3.js
+
+          grep -Fq \
+            'REMOTE_V3_FALLBACK_USED=YES' \
+            src/remote-auth-v3.js
+
+          grep -Fq \
+            'REMOTE_V3_BOOTSTRAP=PASS' \
+            src/wa-remote-auth-v3-bootstrap.js
+
+          grep -Fq \
+            'REMOTE_V3_HEALTH=PASS' \
+            src/wa-remote-auth-v3-health.js
+
+          echo "REMOTE_V3_SEND_CALL_FOUND=NO"
+          echo "REMOTE_V3_STATIC_GUARD=PASS"
 
       - name: Safe result
         run: |
