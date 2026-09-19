@@ -1,32 +1,26 @@
-name: WA Attendance Production V1
+name: WA Production V3 Readiness
 
 on:
   workflow_dispatch:
-    inputs:
-      action:
-        description: Attendance action
-        required: true
-        type: choice
-        options:
-          - checkin
-          - checkout
-      confirm:
-        description: Type Production to authorize the main-group run
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: wa-attendance-production-cloud
+  group: wa-production-v3-readiness
   cancel-in-progress: false
 
 jobs:
-  attendance-production:
-    name: Attendance Production Cloud
-    runs-on: ubuntu-24.04
+  production-v3-readiness:
+    name: Production V3 Readiness
+    runs-on: ubuntu-latest
     timeout-minutes: 20
+
+    env:
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+      ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+      ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
 
     steps:
       - name: Checkout repository
@@ -35,7 +29,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: "24"
           cache: npm
 
       - name: Install dependencies
@@ -44,162 +38,24 @@ jobs:
       - name: Locate Chrome
         shell: bash
         run: |
-          set -Eeuo pipefail
+          set -euo pipefail
 
-          CHROME=""
+          CHROME_PATH="$(
+            command -v google-chrome ||
+            command -v google-chrome-stable ||
+            command -v chromium ||
+            command -v chromium-browser ||
+            true
+          )"
 
-          for candidate in \
-            google-chrome-stable \
-            google-chrome \
-            chromium \
-            chromium-browser
-          do
-            if command -v "$candidate" >/dev/null 2>&1; then
-              CHROME="$(command -v "$candidate")"
-              break
-            fi
-          done
-
-          if [ -z "$CHROME" ]; then
-            echo "CHROME_FOUND=NO"
-            exit 20
+          if [ -z "$CHROME_PATH" ]; then
+            echo "CHROME_NOT_FOUND=YES"
+            exit 1
           fi
 
-          echo "CHROME_PATH=$CHROME" >> "$GITHUB_ENV"
+          echo "CHROME_PATH=$CHROME_PATH" >> "$GITHUB_ENV"
           echo "CHROME_FOUND=YES"
 
-      - name: Resolve attendance trigger
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_SCHEDULE: ${{ github.event.schedule }}
-          INPUT_ACTION: ${{ inputs.action }}
-          INPUT_CONFIRM: ${{ inputs.confirm }}
-        run: |
-          set -Eeuo pipefail
-
-          if [ "$EVENT_NAME" = "schedule" ]; then
-            case "$EVENT_SCHEDULE" in
-              "0 6 * * 1-6")
-                ACTION="checkin"
-                ;;
-              "0 17 * * 1-6")
-                ACTION="checkout"
-                ;;
-              *)
-                echo "UNKNOWN_SCHEDULE=YES"
-                exit 19
-                ;;
-            esac
-
-            CONFIRM="Production"
-
-          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            ACTION="$INPUT_ACTION"
-            CONFIRM="$INPUT_CONFIRM"
-
-          else
-            echo "UNSUPPORTED_EVENT=$EVENT_NAME"
-            exit 20
-          fi
-
-          echo "ATTENDANCE_ACTION=$ACTION" >> "$GITHUB_ENV"
-          echo "ATTENDANCE_CONFIRM=$CONFIRM" >> "$GITHUB_ENV"
-
-          echo "ATTENDANCE_TRIGGER_RESOLVED=YES"
-          echo "ATTENDANCE_EVENT=$EVENT_NAME"
-          echo "ATTENDANCE_ACTION=$ACTION"
-
-      - name: Attendance Production safety guard
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          if [ "$ATTENDANCE_CONFIRM" != "Production" ]; then
-            echo "PRODUCTION_CONFIRMATION=FAIL"
-            exit 21
-          fi
-
-          echo "PRODUCTION_CONFIRMATION=PASS"
-
-          case "$ATTENDANCE_ACTION" in
-            checkin|checkout)
-              ;;
-            *)
-              echo "ATTENDANCE_ACTION_VALID=NO"
-              exit 22
-              ;;
-          esac
-
-          echo "ATTENDANCE_ACTION_VALID=YES"
-
-          for source in \
-            src/wa-send-checkin-production.js \
-            src/wa-send-checkout-production.js
-          do
-            grep -Fq \
-              'WA_AUTO_ABSENSI_DUAL_AUTH_V1' \
-              "$source"
-
-            grep -Fq \
-              "EXPECTED_GROUP_NAME = 'Aktif Tim Magang OCN'" \
-              "$source"
-
-            grep -Fq \
-              "require('./remote-auth-v3')" \
-              "$source"
-
-            grep -Fq \
-              "createRemoteAuthV3" \
-              "$source"
-
-            grep -Fq \
-              "REMOTE_AUTH_VERSION=V3" \
-              "$source"
-
-            grep -Fq \
-              "REMOTE_SESSION_MISSING" \
-              "$source"
-
-            grep -Fq \
-              "REMOTE_AUTH_QR_FORBIDDEN=YES" \
-              "$source"
-          done
-
-          if grep -Eq \
-            '[0-9]{10,}@g\.us' \
-            src/wa-send-checkin-production.js \
-            src/wa-send-checkout-production.js
-          then
-            echo "HARDCODED_GROUP_ID=YES"
-            exit 23
-          fi
-
-          if grep -Fq \
-            "EXPECTED_GROUP_NAME = 'Testing'" \
-            src/wa-send-checkin-production.js \
-            src/wa-send-checkout-production.js
-          then
-            echo "TESTING_GROUP_REFERENCE=YES"
-            exit 24
-          fi
-
-          if grep -Fq \
-            "require('./remote-auth')" \
-            src/wa-send-checkin-production.js \
-            src/wa-send-checkout-production.js
-          then
-            echo "PRODUCTION_V2_IMPORT_REMAINS=YES"
-            exit 25
-          fi
-
-          echo "HARDCODED_GROUP_ID=NO"
-          echo "TESTING_GROUP_REFERENCE=NO"
-          echo "PRODUCTION_V2_IMPORT_REMAINS=NO"
-          echo "PRODUCTION_REMOTEAUTH_VERSION=V3"
-          echo "PRODUCTION_SOURCE_GUARD=PASS"
-
-      # WA_AUTO_ABSENSI_ATLAS_DYNAMIC_IP_ADD_V1
       - name: Add temporary Atlas runner IP
         shell: bash
         env:
@@ -384,161 +240,85 @@ jobs:
 
           echo "ATLAS_IP_ACTIVATION=PASS"
           echo "ATLAS_DYNAMIC_IP_READY=YES"
+      - name: Verify Production V3 source isolation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
 
-      # WA_AUTO_ABSENSI_SYNC_ONCE_BEFORE_SEND_V1
-      - name: Sync latest self-chat attendance inputs
+          for source in \
+            src/wa-send-checkin-production.js \
+            src/wa-send-checkout-production.js \
+            src/wa-self-chat-ingest-production-v3.js
+          do
+            grep -Fq "require('./remote-auth-v3')" "$source"
+            grep -Fq 'REMOTE_AUTH_VERSION=V3' "$source"
+          done
+
+          grep -Fq \
+            "EXPECTED_GROUP_NAME = 'Aktif Tim Magang OCN'" \
+            src/wa-send-checkin-production.js
+
+          grep -Fq \
+            "EXPECTED_GROUP_NAME = 'Aktif Tim Magang OCN'" \
+            src/wa-send-checkout-production.js
+
+          if grep -Fq "EXPECTED_GROUP_NAME = 'Testing'" \
+            src/wa-send-checkin-production.js \
+            src/wa-send-checkout-production.js
+          then
+            echo "PRODUCTION_TESTING_REFERENCE=YES"
+            exit 30
+          fi
+
+          if grep -Fq 'sendMessage(' \
+            src/wa-self-chat-ingest-production-v3.js
+          then
+            echo "PRODUCTION_SYNC_SEND_CALL=YES"
+            exit 31
+          fi
+
+          echo "PRODUCTION_TESTING_REFERENCE=NO"
+          echo "PRODUCTION_SYNC_SEND_CALL=NO"
+          echo "PRODUCTION_V3_SOURCE_ISOLATION=PASS"
+
+      - name: Verify Production V3 sync readiness
         shell: bash
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth-v3
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-production-v3-readiness
           TZ: Asia/Jakarta
         run: |
           set -Eeuo pipefail
 
-          : "${MONGODB_URI:?MONGODB_URI missing}"
-
           mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
 
-          rm -f attendance-sync.log
+          echo "PRODUCTION_V3_READINESS_START=YES"
+          echo "NO_WHATSAPP_MESSAGE_WILL_BE_SENT=YES"
+
+          rm -f production-v3-readiness.log
 
           npm run attendance:sync-once-production-v3 \
             2>&1 |
-            tee attendance-sync.log
+            tee production-v3-readiness.log
 
-          grep -Fxq \
-            'REMOTE_AUTH_VERSION=V3' \
-            attendance-sync.log
+          grep -Fxq 'AUTH_MODE=REMOTE' production-v3-readiness.log
+          grep -Fxq 'REMOTE_AUTH_VERSION=V3' production-v3-readiness.log
+          grep -Fxq 'REMOTE_V3_ACTIVE_RESTORE=PASS' production-v3-readiness.log
+          grep -Fxq 'WHATSAPP_READY=YES' production-v3-readiness.log
+          grep -Fxq 'SELF_CHAT_CATCHUP_STABLE=YES' production-v3-readiness.log
+          grep -Fxq 'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS' production-v3-readiness.log
+          grep -Fxq 'ATTENDANCE_SYNC_ONCE=PASS' production-v3-readiness.log
 
-          grep -Fxq \
-            'SELF_CHAT_CATCHUP_STABLE=YES' \
-            attendance-sync.log
-
-          grep -Fxq \
-            'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS' \
-            attendance-sync.log
-
-          grep -Fxq \
-            'ATTENDANCE_SYNC_ONCE=PASS' \
-            attendance-sync.log
-
-          echo "ATTENDANCE_SYNC_BEFORE_SEND=PASS"
-
-      - name: Run Production attendance sender
-        shell: bash
-        env:
-          MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth-v3
-          TZ: Asia/Jakarta
-        run: |
-          set -Eeuo pipefail
-
-          : "${MONGODB_URI:?MONGODB_URI missing}"
-          echo "ATTENDANCE_ACTION=$ATTENDANCE_ACTION"
-
-          mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
-
-          echo "REMOTE_DATA_PATH_READY=YES"
-
-          rm -f attendance.log
-
-          case "$ATTENDANCE_ACTION" in
-            checkin)
-              npm run wa:send-checkin-production \
-                2>&1 |
-                tee attendance.log
-              ;;
-
-            checkout)
-              npm run wa:send-checkout-production \
-                2>&1 |
-                tee attendance.log
-              ;;
-
-            *)
-              echo "ATTENDANCE_ACTION_RUNTIME_VALID=NO"
-              exit 31
-              ;;
-          esac
-
-      - name: Verify Production attendance result
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          test -f attendance.log
-
-          grep -Fxq \
-            'AUTH_MODE=REMOTE' \
-            attendance.log
-
-          grep -Fxq \
-            'REMOTE_AUTH_VERSION=V3' \
-            attendance.log
-
-          grep -Fxq \
-            'MONGODB_CONNECTED=YES' \
-            attendance.log
-
-          grep -Fxq \
-            'REMOTE_SESSION_EXISTS_BEFORE=YES' \
-            attendance.log
-
-          grep -Fxq \
-            'WHATSAPP_READY=YES' \
-            attendance.log
-
-          grep -Fxq \
-            'TARGET_GROUP_FOUND=YES' \
-            attendance.log
-
-          grep -Fxq \
-            'TARGET_GROUP_NAME=Aktif Tim Magang OCN' \
-            attendance.log
-
-          grep -Fxq \
-            'TARGET_GROUP_SAFE=YES' \
-            attendance.log
-
-          if grep -Fxq \
-            'QR_RECEIVED=YES' \
-            attendance.log
+          if grep -Fxq 'REMOTE_AUTH_QR_FORBIDDEN=YES' production-v3-readiness.log
           then
-            echo "QR_REQUIRED_IN_CLOUD=YES"
-            exit 40
+            echo "PRODUCTION_V3_QR_REQUIRED=YES"
+            exit 32
           fi
 
-          echo "QR_REQUIRED_IN_CLOUD=NO"
+          echo "PRODUCTION_V3_QR_REQUIRED=NO"
+          echo "PRODUCTION_V3_SYNC_READINESS=PASS"
+          echo "MESSAGE_SENT=NO"
 
-          if grep -Fxq \
-            'MESSAGE_SENT=YES' \
-            attendance.log
-          then
-            echo "ATTENDANCE_RESULT=SENT"
-            echo "PRODUCTION_CLOUD_ATTENDANCE=PASS"
-            exit 0
-          fi
-
-          if \
-            grep -Fxq \
-              'DUPLICATE_FOUND=YES' \
-              attendance.log &&
-            grep -Fxq \
-              'ACTION=SKIP' \
-              attendance.log &&
-            grep -Fxq \
-              'MESSAGE_SENT=NO' \
-              attendance.log
-          then
-            echo "ATTENDANCE_RESULT=DUPLICATE_SKIP"
-            echo "PRODUCTION_CLOUD_ATTENDANCE=PASS"
-            exit 0
-          fi
-
-          echo "ATTENDANCE_RESULT=UNEXPECTED"
-          echo "PRODUCTION_CLOUD_ATTENDANCE=FAIL"
-          exit 41
-
-      # WA_AUTO_ABSENSI_ATLAS_DYNAMIC_IP_CLEANUP_V1
       - name: Remove temporary Atlas runner IP
         if: always()
         shell: bash
@@ -630,17 +410,3 @@ jobs:
 
           echo "ATLAS_IP_CLEANUP=PASS"
           echo "ATLAS_IP_CLEANUP_VERIFY=PASS"
-
-      - name: Cleanup attendance local state
-        if: always()
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-
-          rm -rf \
-            "${RUNNER_TEMP}/wa-auto-absensi-remoteauth-v3"
-
-          rm -f \
-            attendance.log
-
-          echo "EPHEMERAL_ATTENDANCE_STATE_REMOVED=YES"

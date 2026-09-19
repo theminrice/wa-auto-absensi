@@ -11,13 +11,12 @@ const {
 const mongoose = require('mongoose');
 
 const {
-  REMOTE_AUTH_SESSION,
-  REMOTE_AUTH_BACKUP_MS,
+  REMOTE_AUTH_V3_ACTIVE_SESSION: REMOTE_AUTH_SESSION,
+  REMOTE_AUTH_V3_BACKUP_MS: REMOTE_AUTH_BACKUP_MS,
   getRemoteAuthDataPath,
   getPuppeteerOptions,
-  createMongoStore,
-  createRemoteAuth
-} = require('./remote-auth');
+  createRemoteAuthV3
+} = require('./remote-auth-v3');
 
 const {
   buildCheckOut
@@ -1736,14 +1735,21 @@ async function main() {
       'MONGODB_CONNECTED=YES'
     );
 
-    const store =
-      createMongoStore(
+    const remoteV3 =
+      createRemoteAuthV3(
         mongoose,
         dataPath
       );
 
+    const store =
+      remoteV3.store;
+
     console.log(
       'MONGO_STORE_READY=YES'
+    );
+
+    console.log(
+      'REMOTE_AUTH_VERSION=V3'
     );
 
     const remoteSessionExists =
@@ -1765,10 +1771,7 @@ async function main() {
     }
 
     authStrategy =
-      createRemoteAuth(
-        store,
-        dataPath
-      );
+      remoteV3.authStrategy;
 
     puppeteerOptions =
       getPuppeteerOptions();
