@@ -554,11 +554,16 @@ function createHardenedRemoteAuthV3Store(
     function queuedHardenedSave(
       options
     ) {
+      const activeSave =
+        Boolean(
+          options &&
+          options.session ===
+            REMOTE_AUTH_V3_ACTIVE_SESSION
+        );
+
       if (
         shutdownStarted &&
-        options &&
-        options.session ===
-          REMOTE_AUTH_V3_ACTIVE_SESSION
+        activeSave
       ) {
         console.log(
           'REMOTE_V3_SAVE_SKIPPED_SHUTDOWN=YES'
@@ -569,10 +574,30 @@ function createHardenedRemoteAuthV3Store(
 
       const operation =
         saveQueue.then(
-          () =>
-            hardenedSave(
+          async () => {
+            /*
+             * A backup tick can enqueue while a previous
+             * save is still running. Shutdown may begin
+             * before this queued operation gets its turn.
+             * Re-check here so a pre-queued save cannot
+             * start after the local RemoteAuth zip has
+             * already been consumed/cleaned up.
+             */
+            if (
+              shutdownStarted &&
+              activeSave
+            ) {
+              console.log(
+                'REMOTE_V3_PREQUEUED_SAVE_SKIPPED_SHUTDOWN=YES'
+              );
+
+              return;
+            }
+
+            return hardenedSave(
               options
-            )
+            );
+          }
         );
 
       saveQueue =
