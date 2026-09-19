@@ -1172,16 +1172,73 @@ const conflictMonitorPromise =
   );
 }
 
-main().catch(async error => {
-  console.error(
-    `LISTENER_STARTUP_ERROR=${error.message}`
-  );
+// WA_AUTO_ABSENSI_ONE_SESSION_CANDIDATE_V1
+// Import-safe: sender supplies its existing WhatsApp Client and MongoDB
+// connection. This module MUST NOT initialize, send, or destroy that Client.
+async function syncPaleluWithClient(existingClient) {
+  if (
+    !existingClient ||
+    typeof existingClient.getChats !== 'function' ||
+    typeof existingClient.getChatById !== 'function'
+  ) {
+    throw new Error('ONE_SESSION_CLIENT_INVALID');
+  }
+
+  if (
+    mongoose.connection.readyState !== 1 ||
+    !mongoose.connection.db
+  ) {
+    throw new Error('ONE_SESSION_MONGODB_NOT_READY');
+  }
+
+  if (client !== null) {
+    throw new Error('ONE_SESSION_INGEST_ALREADY_BOUND');
+  }
+
+  client = existingClient;
+  inputGroupId = null;
+  processedMessageIds.clear();
 
   try {
-    await shutdown(
-      'STARTUP_ERROR'
+    await ensureAttendanceIndexes(
+      mongoose.connection
     );
-  } catch (_) {}
 
-  process.exit(1);
-});
+    await resolveInputGroup();
+    await startupCatchupPaleluStable();
+
+    // Preserve existing sync-once contract. Do not perform another
+    // post-READY settle here: the owning sender already waited.
+    console.log('ONE_SESSION_PALELU_SYNC=PASS');
+    console.log('ATTENDANCE_SYNC_ONCE_CATCHUP=PASS');
+    return true;
+  } catch (error) {
+    console.log('ONE_SESSION_PALELU_SYNC=FAIL');
+    throw error;
+  } finally {
+    // Never destroy the sender's WhatsApp client or close its DB.
+    client = null;
+    inputGroupId = null;
+    processedMessageIds.clear();
+  }
+}
+
+module.exports = {
+  syncPaleluWithClient
+};
+
+if (require.main === module) {
+  main().catch(async error => {
+    console.error(
+      `LISTENER_STARTUP_ERROR=${error.message}`
+    );
+
+    try {
+      await shutdown(
+        'STARTUP_ERROR'
+      );
+    } catch (_) {}
+
+    process.exit(1);
+  });
+}
