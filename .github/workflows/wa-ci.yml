@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -30,7 +33,9 @@ jobs:
         run: npm ci
 
       - name: Run project tests
-        run: npm test
+        run: |
+          npm test
+          node src/attendance-leave-store.test.js
 
       - name: Verify WhatsApp dependencies load
         run: |
@@ -39,6 +44,9 @@ jobs:
       - name: Syntax check WhatsApp source
         run: |
           node --check src/attendance.js
+          node --check src/attendance-leave.js
+          node --check src/attendance-leave.test.js
+          node --check src/attendance-leave-store.test.js
           node --check src/duplicate-guard.js
           node --check src/wa-capture-testing.js
           node --check src/wa-read-project.js
@@ -328,6 +336,39 @@ jobs:
           done
 
           echo "REMOTE_V3_SHUTDOWN_DRAIN_STATIC_GUARD=PASS"
+
+      - name: Verify WIB leave safe-skip wiring
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          grep -Fq 'ATTENDANCE_LEAVE_COMMAND_V1' src/attendance-leave.js
+          grep -Fq "kind: 'leave'" src/attendance-input-store.js
+          grep -Fq 'SELF_CHAT_LEAVE_CAPTURED=YES' src/wa-self-chat-ingest-production-v3.js
+
+          # Both live incoming and startup catchup must parse l:
+          [ "$(grep -Fc 'parseLeaveCommand(' src/wa-self-chat-ingest-production-v3.js)" = "2" ]
+
+          for sender in \
+            src/wa-send-checkin-production.js \
+            src/wa-send-checkout-production.js
+          do
+            grep -Fq 'ATTENDANCE_LEAVE_SAFE_SKIP_V1' "$sender"
+            grep -Fq 'getLatestLeave(' "$sender"
+            grep -Fq 'evaluateLeaveForDate(' "$sender"
+            grep -Fq 'ATTENDANCE_LEAVE_SKIP=YES' "$sender"
+            grep -Fq 'MESSAGE_SENT=NO' "$sender"
+            grep -Fq 'ACTION=SKIP' "$sender"
+          done
+
+          grep -Fq 'ATTENDANCE_LEAVE_SAFE_SKIP_V1' \
+            .github/workflows/wa-attendance-production-v1.yml
+          grep -Fq 'ATTENDANCE_RESULT=LEAVE_SKIP' \
+            .github/workflows/wa-attendance-production-v1.yml
+          grep -Fq 'ATTENDANCE_LEAVE_SEND_VIOLATION=YES' \
+            .github/workflows/wa-attendance-production-v1.yml
+
+          echo 'ATTENDANCE_LEAVE_SAFE_SKIP_STATIC_GUARD=PASS'
 
       - name: Safe result
         run: |
