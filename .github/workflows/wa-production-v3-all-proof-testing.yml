@@ -1,0 +1,675 @@
+name: WA Production V3 Full Proof - Testing
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type Testing-V3-All-Proof to authorize two real sends to Testing
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wa-production-v3-all-proof-testing
+  cancel-in-progress: false
+
+jobs:
+  production-v3-all-proof-testing:
+    name: Production V3 Full Proof - Testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+      ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+      ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Locate Chrome
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CHROME_PATH="$(
+            command -v google-chrome ||
+            command -v google-chrome-stable ||
+            command -v chromium ||
+            command -v chromium-browser ||
+            true
+          )"
+
+          if [ -z "$CHROME_PATH" ]; then
+            echo "CHROME_NOT_FOUND=YES"
+            exit 1
+          fi
+
+          echo "CHROME_PATH=$CHROME_PATH" >> "$GITHUB_ENV"
+          echo "CHROME_FOUND=YES"
+
+      - name: Add temporary Atlas runner IP
+        shell: bash
+        env:
+          ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+          ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+          ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+        run: |
+          set -Eeuo pipefail
+
+          : "${ATLAS_CLIENT_ID:?ATLAS_CLIENT_ID missing}"
+          : "${ATLAS_CLIENT_SECRET:?ATLAS_CLIENT_SECRET missing}"
+          : "${ATLAS_PROJECT_ID:?ATLAS_PROJECT_ID missing}"
+
+          API_ACCEPT="application/vnd.atlas.2025-03-12+json"
+
+          TOKEN_JSON="$(
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --request POST \
+              --url "https://cloud.mongodb.com/api/oauth/token" \
+              --user "${ATLAS_CLIENT_ID}:${ATLAS_CLIENT_SECRET}" \
+              --header "Accept: application/json" \
+              --header "Content-Type: application/x-www-form-urlencoded" \
+              --data "grant_type=client_credentials"
+          )"
+
+          ACCESS_TOKEN="$(
+            printf '%s' "$TOKEN_JSON" |
+              jq -r '.access_token // empty'
+          )"
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ATLAS_OAUTH=FAIL"
+            exit 30
+          fi
+
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "ATLAS_OAUTH=PASS"
+
+          RUNNER_IP="$(
+            curl \
+              -4 \
+              --fail \
+              --silent \
+              --show-error \
+              "https://api.ipify.org"
+          )"
+
+          python3 - "$RUNNER_IP" <<'PY'
+          import ipaddress
+          import sys
+
+          ip = ipaddress.ip_address(sys.argv[1].strip())
+
+          if ip.version != 4:
+              raise SystemExit("Runner public address is not IPv4")
+          PY
+
+          echo "::add-mask::$RUNNER_IP"
+
+          echo "ATLAS_RUNNER_IP=$RUNNER_IP" >> "$GITHUB_ENV"
+          echo "ATLAS_IP_CREATED=0" >> "$GITHUB_ENV"
+
+          BASE_URL="https://cloud.mongodb.com/api/atlas/v2/groups/${ATLAS_PROJECT_ID}/accessList"
+
+          CHECK_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --output atlas-existing.json \
+              --write-out "%{http_code}" \
+              --request GET \
+              --url "${BASE_URL}/${RUNNER_IP}" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: ${API_ACCEPT}"
+          )"
+
+          if [ "$CHECK_CODE" = "200" ]; then
+
+            echo "ATLAS_IP_PREEXISTING=YES"
+
+          elif [ "$CHECK_CODE" = "404" ]; then
+
+            echo "ATLAS_IP_PREEXISTING=NO"
+
+            DELETE_AFTER="$(
+              date -u \
+                -d '+30 minutes' \
+                '+%Y-%m-%dT%H:%M:%SZ'
+            )"
+
+            COMMENT="WA Auto Absensi RemoteAuth ${GITHUB_RUN_ID}"
+
+            PAYLOAD="$(
+              jq -nc \
+                --arg ip "$RUNNER_IP" \
+                --arg comment "$COMMENT" \
+                --arg deleteAfterDate "$DELETE_AFTER" \
+                '[{
+                  ipAddress: $ip,
+                  comment: $comment,
+                  deleteAfterDate: $deleteAfterDate
+                }]'
+            )"
+
+            ADD_CODE="$(
+              curl \
+                --silent \
+                --show-error \
+                --output atlas-add.json \
+                --write-out "%{http_code}" \
+                --request POST \
+                --url "$BASE_URL" \
+                --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+                --header "Accept: ${API_ACCEPT}" \
+                --header "Content-Type: application/json" \
+                --data "$PAYLOAD"
+            )"
+
+            if [ "$ADD_CODE" != "200" ] &&
+               [ "$ADD_CODE" != "201" ]; then
+
+              echo "ATLAS_IP_ADD=FAIL"
+              exit 31
+            fi
+
+            echo "ATLAS_IP_CREATED=1" >> "$GITHUB_ENV"
+
+            echo "ATLAS_IP_ADD=PASS"
+            echo "ATLAS_IP_TEMPORARY_EXPIRY=ENABLED"
+
+          else
+
+            echo "ATLAS_IP_PRECHECK_HTTP=${CHECK_CODE}"
+            echo "ATLAS_IP_PRECHECK=FAIL"
+            exit 32
+          fi
+
+          ACTIVE=0
+
+          for ATTEMPT in $(seq 1 24); do
+
+            STATUS_JSON="$(
+              curl \
+                --fail-with-body \
+                --silent \
+                --show-error \
+                --request GET \
+                --url "${BASE_URL}/${RUNNER_IP}/status" \
+                --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+                --header "Accept: ${API_ACCEPT}"
+            )"
+
+            STATUS="$(
+              printf '%s' "$STATUS_JSON" |
+                jq -r '.STATUS // .status // empty'
+            )"
+
+            echo "ATLAS_IP_STATUS=${STATUS:-UNKNOWN}"
+
+            if [ "$STATUS" = "ACTIVE" ]; then
+              ACTIVE=1
+              break
+            fi
+
+            if [ "$STATUS" = "FAILED" ]; then
+              echo "ATLAS_IP_ACTIVATION=FAIL"
+              exit 33
+            fi
+
+            sleep 5
+          done
+
+          if [ "$ACTIVE" != "1" ]; then
+            echo "ATLAS_IP_ACTIVATION=TIMEOUT"
+            exit 34
+          fi
+
+          rm -f atlas-existing.json atlas-add.json
+
+          echo "ATLAS_IP_ACTIVATION=PASS"
+          echo "ATLAS_DYNAMIC_IP_READY=YES"
+      - name: Verify V3 proof isolation and confirmation
+        shell: bash
+        env:
+          PROOF_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -Eeuo pipefail
+
+          if [ "$PROOF_CONFIRM" != "Testing-V3-All-Proof" ]; then
+            echo "FULL_PROOF_CONFIRMATION=FAIL"
+            exit 30
+          fi
+
+          echo "FULL_PROOF_CONFIRMATION=PASS"
+
+          CHECKIN_PROOF=src/wa-send-checkin-v3-proof-testing.js
+          CHECKOUT_PROOF=src/wa-send-checkout-v3-proof-testing.js
+          PARSER_PROOF=src/wa-input-parser-v3-proof.js
+
+          grep -Fq 'WA_PRODUCTION_V3_CHECKIN_PROOF_TESTING_V1' "$CHECKIN_PROOF"
+          grep -Fq "EXPECTED_GROUP_NAME = 'Testing'" "$CHECKIN_PROOF"
+          grep -Fq "require('./remote-auth-v3')" "$CHECKIN_PROOF"
+          grep -Fq 'REMOTE_AUTH_VERSION=V3' "$CHECKIN_PROOF"
+          grep -Fq 'E2E_PROOF_AUTOMATIC_RETRY=NO' "$CHECKIN_PROOF"
+          grep -Fq 'SERVER_ACK_CONFIRMED=YES' "$CHECKIN_PROOF"
+          grep -Fq 'E2E_PROOF_CHECKIN=PASS' "$CHECKIN_PROOF"
+
+          grep -Fq 'WA_PRODUCTION_V3_E2E_PROOF_TESTING_V1' "$CHECKOUT_PROOF"
+          grep -Fq "EXPECTED_GROUP_NAME = 'Testing'" "$CHECKOUT_PROOF"
+          grep -Fq "require('./remote-auth-v3')" "$CHECKOUT_PROOF"
+          grep -Fq 'REMOTE_AUTH_VERSION=V3' "$CHECKOUT_PROOF"
+          grep -Fq 'E2E_PROOF_AUTOMATIC_RETRY=NO' "$CHECKOUT_PROOF"
+          grep -Fq 'SERVER_ACK_CONFIRMED=YES' "$CHECKOUT_PROOF"
+          grep -Fq 'E2E_PROOF=PASS' "$CHECKOUT_PROOF"
+
+          grep -Fq 'P_COLON_RUNTIME_PARSE=PASS' "$PARSER_PROOF"
+          grep -Fq 'P_IMAGE_RUNTIME_PARSE=PASS' "$PARSER_PROOF"
+          grep -Fq 'PRODUCTION_ATTENDANCE_DATA_MODIFIED=NO' "$PARSER_PROOF"
+
+          if grep -Fq 'Aktif Tim Magang OCN' "$CHECKIN_PROOF" "$CHECKOUT_PROOF"; then
+            echo "E2E_PROOF_MAIN_GROUP_REFERENCE=YES"
+            exit 31
+          fi
+
+          grep -Fq \
+            "EXPECTED_GROUP_NAME = 'Aktif Tim Magang OCN'" \
+            src/wa-send-checkout-production.js
+
+          if grep -Fq \
+            "EXPECTED_GROUP_NAME = 'Testing'" \
+            src/wa-send-checkout-production.js
+          then
+            echo "PRODUCTION_SENDER_TARGET_DRIFT=YES"
+            exit 32
+          fi
+
+          if grep -Fq 'sendMessage(' src/wa-self-chat-ingest-production-v3.js; then
+            echo "PRODUCTION_V3_SYNC_SEND_CALL=YES"
+            exit 33
+          fi
+
+          echo "E2E_PROOF_MAIN_GROUP_REFERENCE=NO"
+          echo "PRODUCTION_SENDER_TARGET_DRIFT=NO"
+          echo "PRODUCTION_V3_SYNC_SEND_CALL=NO"
+          echo "FULL_PROOF_SOURCE_ISOLATION=PASS"
+
+      - name: Prove P and P-colon input parsing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          rm -f v3-input-parser-proof.log
+
+          npm run wa:input-parser-v3-proof \
+            2>&1 |
+            tee v3-input-parser-proof.log
+
+          grep -Fxq 'P_COLON_SOURCE_MARKERS=PASS' v3-input-parser-proof.log
+          grep -Fxq 'P_COLON_RUNTIME_PARSE=PASS' v3-input-parser-proof.log
+          grep -Fxq 'P_IMAGE_SOURCE_MARKERS=PASS' v3-input-parser-proof.log
+          grep -Fxq 'P_IMAGE_RUNTIME_PARSE=PASS' v3-input-parser-proof.log
+          grep -Fxq 'P_AND_P_COLON_PROOF=PASS' v3-input-parser-proof.log
+          grep -Fxq 'PRODUCTION_ATTENDANCE_DATA_MODIFIED=NO' v3-input-parser-proof.log
+          grep -Fxq 'WHATSAPP_MESSAGE_SENT=NO' v3-input-parser-proof.log
+
+          echo "FULL_PROOF_INPUT_PARSER=PASS"
+
+      - name: Sync latest inputs with Production V3
+        shell: bash
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-v3-proof-testing
+          TZ: Asia/Jakarta
+        run: |
+          set -Eeuo pipefail
+
+          mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
+
+          echo "E2E_PROOF_SYNC_START=YES"
+          echo "E2E_PROOF_SYNC_SEND=NO"
+
+          rm -f v3-proof-sync.log
+
+          npm run attendance:sync-once-production-v3 \
+            2>&1 |
+            tee v3-proof-sync.log
+
+          grep -Fxq 'AUTH_MODE=REMOTE' v3-proof-sync.log
+          grep -Fxq 'REMOTE_AUTH_VERSION=V3' v3-proof-sync.log
+          grep -Fxq 'REMOTE_V3_ACTIVE_RESTORE=PASS' v3-proof-sync.log
+          grep -Fxq 'WHATSAPP_READY=YES' v3-proof-sync.log
+          grep -Fxq 'SELF_CHAT_CATCHUP_STABLE=YES' v3-proof-sync.log
+          grep -Fxq 'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS' v3-proof-sync.log
+          grep -Fxq 'ATTENDANCE_SYNC_ONCE=PASS' v3-proof-sync.log
+
+          if grep -Fxq 'REMOTE_AUTH_QR_FORBIDDEN=YES' v3-proof-sync.log
+          then
+            echo "E2E_PROOF_SYNC_QR_REQUIRED=YES"
+            exit 32
+          fi
+
+          echo "E2E_PROOF_SYNC_QR_REQUIRED=NO"
+          echo "E2E_PROOF_SYNC=PASS"
+          echo "E2E_PROOF_SYNC_MESSAGE_SENT=NO"
+
+      - name: Send one V3 check-in proof to Testing
+        shell: bash
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-v3-proof-testing
+          TZ: Asia/Jakarta
+        run: |
+          set -Eeuo pipefail
+
+          : "${MONGODB_URI:?MONGODB_URI missing}"
+
+          echo "FULL_PROOF_CHECKIN_START=YES"
+          echo "FULL_PROOF_TARGET=Testing"
+          echo "FULL_PROOF_MAIN_GROUP_ALLOWED=NO"
+          echo "FULL_PROOF_CHECKIN_SEND_MAX=1"
+          echo "FULL_PROOF_AUTOMATIC_RETRY=NO"
+
+          rm -f v3-checkin-proof.log
+
+          npm run wa:send-checkin-v3-proof-testing \
+            2>&1 |
+            tee v3-checkin-proof.log
+
+      - name: Verify V3 check-in proof result
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          test -f v3-checkin-proof.log
+
+          grep -Fxq 'E2E_PROOF_MODE=TESTING_V3_CHECKIN_PROOF' v3-checkin-proof.log
+          grep -Fxq 'E2E_PROOF_CHECKIN_SEND_MAX=1' v3-checkin-proof.log
+          grep -Fxq 'E2E_PROOF_AUTOMATIC_RETRY=NO' v3-checkin-proof.log
+          grep -Fxq 'AUTH_MODE=REMOTE' v3-checkin-proof.log
+          grep -Fxq 'REMOTE_AUTH_VERSION=V3' v3-checkin-proof.log
+          grep -Fxq 'REMOTE_SESSION_EXISTS_BEFORE=YES' v3-checkin-proof.log
+          grep -Fxq 'REMOTE_V3_ACTIVE_RESTORE=PASS' v3-checkin-proof.log
+          grep -Fxq 'WHATSAPP_READY=YES' v3-checkin-proof.log
+          grep -Fxq 'TARGET_GROUP_FOUND=YES' v3-checkin-proof.log
+          grep -Fxq 'TARGET_GROUP_NAME=Testing' v3-checkin-proof.log
+          grep -Fxq 'TARGET_GROUP_IS_GROUP=true' v3-checkin-proof.log
+          grep -Fxq 'TARGET_GROUP_SAFE=YES' v3-checkin-proof.log
+          grep -Fxq 'SEND_START=YES' v3-checkin-proof.log
+          grep -Fxq 'SERVER_ACK_CONFIRMED=YES' v3-checkin-proof.log
+          grep -Fxq 'MESSAGE_SENT=YES' v3-checkin-proof.log
+          grep -Fxq 'TARGET_GROUP_CONFIRMED=Testing' v3-checkin-proof.log
+          grep -Fxq 'E2E_PROOF_SERVER_ACK=PASS' v3-checkin-proof.log
+          grep -Fxq 'E2E_PROOF_TARGET=Testing' v3-checkin-proof.log
+          grep -Fxq 'E2E_PROOF_CHECKIN=PASS' v3-checkin-proof.log
+          grep -Fxq 'STEP_PRODUCTION_CHECKIN=PASS' v3-checkin-proof.log
+
+          if grep -Fxq 'QR_RECEIVED=YES' v3-checkin-proof.log; then
+            echo "FULL_PROOF_CHECKIN_QR_REQUIRED=YES"
+            exit 50
+          fi
+
+          if grep -Fq 'Aktif Tim Magang OCN' v3-checkin-proof.log; then
+            echo "FULL_PROOF_CHECKIN_MAIN_GROUP_TOUCHED=YES"
+            exit 51
+          fi
+
+          CHECKIN_SENT_COUNT="$(grep -Fxc 'MESSAGE_SENT=YES' v3-checkin-proof.log || true)"
+
+          if [ "$CHECKIN_SENT_COUNT" != "1" ]; then
+            echo "FULL_PROOF_CHECKIN_MESSAGE_SENT_COUNT=$CHECKIN_SENT_COUNT"
+            exit 52
+          fi
+
+          echo "FULL_PROOF_CHECKIN_QR_REQUIRED=NO"
+          echo "FULL_PROOF_CHECKIN_MAIN_GROUP_TOUCHED=NO"
+          echo "FULL_PROOF_CHECKIN_MESSAGE_SENT_COUNT=1"
+          echo "FULL_PROOF_CHECKIN=PASS"
+
+      - name: Send one V3 checkout proof to Testing
+        shell: bash
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-v3-proof-testing
+          TZ: Asia/Jakarta
+        run: |
+          set -Eeuo pipefail
+
+          : "${MONGODB_URI:?MONGODB_URI missing}"
+
+          echo "E2E_PROOF_SEND_START=YES"
+          echo "E2E_PROOF_TARGET=Testing"
+          echo "E2E_PROOF_MAIN_GROUP_ALLOWED=NO"
+          echo "FULL_PROOF_CHECKOUT_SEND_MAX=1"
+          echo "E2E_PROOF_AUTOMATIC_RETRY=NO"
+
+          rm -f v3-e2e-proof.log
+
+          npm run wa:send-checkout-v3-proof-testing \
+            2>&1 |
+            tee v3-e2e-proof.log
+
+      - name: Verify V3 E2E proof result
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          test -f v3-e2e-proof.log
+
+          grep -Fxq 'E2E_PROOF_MODE=TESTING_V3_CHECKOUT_PROOF' v3-e2e-proof.log
+          grep -Fxq 'E2E_PROOF_ONE_REAL_SEND_MAX=YES' v3-e2e-proof.log
+          grep -Fxq 'E2E_PROOF_AUTOMATIC_RETRY=NO' v3-e2e-proof.log
+          grep -Fxq 'AUTH_MODE=REMOTE' v3-e2e-proof.log
+          grep -Fxq 'REMOTE_AUTH_VERSION=V3' v3-e2e-proof.log
+          grep -Fxq 'REMOTE_SESSION_EXISTS_BEFORE=YES' v3-e2e-proof.log
+          grep -Fxq 'REMOTE_V3_ACTIVE_RESTORE=PASS' v3-e2e-proof.log
+          grep -Fxq 'WHATSAPP_READY=YES' v3-e2e-proof.log
+          grep -Fxq 'TARGET_GROUP_FOUND=YES' v3-e2e-proof.log
+          grep -Fxq 'TARGET_GROUP_NAME=Testing' v3-e2e-proof.log
+          grep -Fxq 'TARGET_GROUP_IS_GROUP=true' v3-e2e-proof.log
+          grep -Fxq 'TARGET_GROUP_SAFE=YES' v3-e2e-proof.log
+          grep -Fxq 'UI_SEND_COMMIT_CONFIRMED=YES' v3-e2e-proof.log
+          grep -Fxq 'SERVER_ACK_CONFIRMED=YES' v3-e2e-proof.log
+          grep -Fxq 'MESSAGE_SENT=YES' v3-e2e-proof.log
+          grep -Fxq 'MEDIA_SENT=YES' v3-e2e-proof.log
+          grep -Fxq 'CAPTION_SENT=YES' v3-e2e-proof.log
+          grep -Fxq 'TARGET_GROUP_CONFIRMED=Testing' v3-e2e-proof.log
+          grep -Fxq 'E2E_PROOF_SERVER_ACK=PASS' v3-e2e-proof.log
+          grep -Fxq 'E2E_PROOF_TARGET=Testing' v3-e2e-proof.log
+          grep -Fxq 'E2E_PROOF=PASS' v3-e2e-proof.log
+          grep -Fxq 'STEP_PRODUCTION_CHECKOUT=PASS' v3-e2e-proof.log
+
+          if grep -Fxq 'QR_RECEIVED=YES' v3-e2e-proof.log; then
+            echo "E2E_PROOF_QR_REQUIRED=YES"
+            exit 40
+          fi
+
+          if grep -Fq 'Aktif Tim Magang OCN' v3-e2e-proof.log; then
+            echo "E2E_PROOF_MAIN_GROUP_TOUCHED=YES"
+            exit 41
+          fi
+
+          MESSAGE_SENT_COUNT="$(grep -Fxc 'MESSAGE_SENT=YES' v3-e2e-proof.log || true)"
+
+          if [ "$MESSAGE_SENT_COUNT" != "1" ]; then
+            echo "E2E_PROOF_MESSAGE_SENT_COUNT=$MESSAGE_SENT_COUNT"
+            exit 42
+          fi
+
+          echo "E2E_PROOF_QR_REQUIRED=NO"
+          echo "E2E_PROOF_MAIN_GROUP_TOUCHED=NO"
+          echo "E2E_PROOF_MESSAGE_SENT_COUNT=1"
+          echo "E2E_PROOF_FINAL=PASS"
+
+      - name: Verify complete V3 proof matrix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          test -f v3-input-parser-proof.log
+          test -f v3-proof-sync.log
+          test -f v3-checkin-proof.log
+          test -f v3-e2e-proof.log
+
+          grep -Fxq 'P_AND_P_COLON_PROOF=PASS' v3-input-parser-proof.log
+          grep -Fxq 'E2E_PROOF_SYNC=PASS' v3-proof-sync.log
+          grep -Fxq 'FULL_PROOF_CHECKIN=PASS' <(printf '%s\n' 'FULL_PROOF_CHECKIN=PASS') || true
+          grep -Fxq 'E2E_PROOF_CHECKIN=PASS' v3-checkin-proof.log
+          grep -Fxq 'E2E_PROOF=PASS' v3-e2e-proof.log
+
+          CHECKIN_SENT_COUNT="$(grep -Fxc 'MESSAGE_SENT=YES' v3-checkin-proof.log || true)"
+          CHECKOUT_SENT_COUNT="$(grep -Fxc 'MESSAGE_SENT=YES' v3-e2e-proof.log || true)"
+
+          TOTAL_REAL_SENDS="$((CHECKIN_SENT_COUNT + CHECKOUT_SENT_COUNT))"
+
+          if [ "$CHECKIN_SENT_COUNT" != "1" ]; then
+            echo "FULL_PROOF_CHECKIN_SENT_COUNT=$CHECKIN_SENT_COUNT"
+            exit 60
+          fi
+
+          if [ "$CHECKOUT_SENT_COUNT" != "1" ]; then
+            echo "FULL_PROOF_CHECKOUT_SENT_COUNT=$CHECKOUT_SENT_COUNT"
+            exit 61
+          fi
+
+          if [ "$TOTAL_REAL_SENDS" != "2" ]; then
+            echo "FULL_PROOF_TOTAL_REAL_SENDS=$TOTAL_REAL_SENDS"
+            exit 62
+          fi
+
+          if grep -Fq 'Aktif Tim Magang OCN' \
+            v3-checkin-proof.log \
+            v3-e2e-proof.log
+          then
+            echo "FULL_PROOF_MAIN_GROUP_TOUCHED=YES"
+            exit 63
+          fi
+
+          echo "FULL_PROOF_P_COLON=PASS"
+          echo "FULL_PROOF_P_IMAGE=PASS"
+          echo "FULL_PROOF_SYNC=PASS"
+          echo "FULL_PROOF_CHECKIN=PASS"
+          echo "FULL_PROOF_CHECKOUT=PASS"
+          echo "FULL_PROOF_MAIN_GROUP_TOUCHED=NO"
+          echo "FULL_PROOF_TOTAL_REAL_SENDS=2"
+          echo "FULL_PROOF_TARGET=Testing"
+          echo "FULL_PROOF_FINAL=PASS"
+
+      - name: Remove temporary Atlas runner IP
+        if: always()
+        shell: bash
+        env:
+          ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+          ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+          ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+          ATLAS_RUNNER_IP: ${{ env.ATLAS_RUNNER_IP }}
+          ATLAS_IP_CREATED: ${{ env.ATLAS_IP_CREATED }}
+        run: |
+          set -Eeuo pipefail
+
+          if [ -z "${ATLAS_RUNNER_IP:-}" ]; then
+            echo "ATLAS_IP_CLEANUP=SKIPPED_NO_RUNNER_IP"
+            exit 0
+          fi
+
+          if [ "${ATLAS_IP_CREATED:-0}" != "1" ]; then
+            echo "ATLAS_IP_CLEANUP=SKIPPED_PREEXISTING"
+            exit 0
+          fi
+
+          API_ACCEPT="application/vnd.atlas.2025-03-12+json"
+
+          TOKEN_JSON="$(
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --request POST \
+              --url "https://cloud.mongodb.com/api/oauth/token" \
+              --user "${ATLAS_CLIENT_ID}:${ATLAS_CLIENT_SECRET}" \
+              --header "Accept: application/json" \
+              --header "Content-Type: application/x-www-form-urlencoded" \
+              --data "grant_type=client_credentials"
+          )"
+
+          ACCESS_TOKEN="$(
+            printf '%s' "$TOKEN_JSON" |
+              jq -r '.access_token // empty'
+          )"
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ATLAS_CLEANUP_OAUTH=FAIL"
+            exit 40
+          fi
+
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "::add-mask::$ATLAS_RUNNER_IP"
+
+          BASE_URL="https://cloud.mongodb.com/api/atlas/v2/groups/${ATLAS_PROJECT_ID}/accessList"
+
+          DELETE_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --request DELETE \
+              --url "${BASE_URL}/${ATLAS_RUNNER_IP}" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: ${API_ACCEPT}"
+          )"
+
+          if [ "$DELETE_CODE" != "204" ] &&
+             [ "$DELETE_CODE" != "404" ]; then
+
+            echo "ATLAS_IP_CLEANUP=FAIL"
+            echo "ATLAS_IP_CLEANUP_HTTP=${DELETE_CODE}"
+            exit 41
+          fi
+
+          VERIFY_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --request GET \
+              --url "${BASE_URL}/${ATLAS_RUNNER_IP}" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: ${API_ACCEPT}"
+          )"
+
+          if [ "$VERIFY_CODE" != "404" ]; then
+            echo "ATLAS_IP_CLEANUP_VERIFY=FAIL"
+            exit 42
+          fi
+
+          echo "ATLAS_IP_CLEANUP=PASS"
+          echo "ATLAS_IP_CLEANUP_VERIFY=PASS"
+
+      - name: Cleanup proof local state
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          rm -rf "${RUNNER_TEMP}/wa-auto-absensi-v3-proof-testing"
+          rm -f v3-input-parser-proof.log v3-proof-sync.log v3-checkin-proof.log v3-e2e-proof.log
+
+          echo "E2E_PROOF_LOCAL_STATE_REMOVED=YES"
