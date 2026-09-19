@@ -306,6 +306,28 @@ jobs:
           echo "CANONICAL_GUARD_WRITE_CALL=NO"
           echo "LIVE_SELF_CHAT_PROOF_STATIC_GUARD=PASS"
 
+      - name: Verify RemoteAuth V3 shutdown drain guards
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          grep -Fq 'beginShutdownAndDrain' src/remote-auth-v3.js
+          grep -Fq 'REMOTE_V3_SAVE_QUEUE_DRAINED=YES' src/remote-auth-v3.js
+          grep -Fq 'REMOTE_V3_SAVE_SKIPPED_SHUTDOWN=YES' src/remote-auth-v3.js
+
+          for source in \
+            src/wa-send-checkin-production.js \
+            src/wa-send-checkout-production.js \
+            src/wa-send-checkin-v3-proof-testing.js \
+            src/wa-send-checkout-v3-proof-testing.js
+          do
+            grep -Fq 'beginShutdownAndDrain' "$source"
+            grep -Fq 'REMOTE_V3_SHUTDOWN_DRAIN=PASS' "$source"
+            grep -Fq 'CLIENT_DESTROY_SKIPPED_DRAIN_FAIL=YES' "$source"
+          done
+
+          echo "REMOTE_V3_SHUTDOWN_DRAIN_STATIC_GUARD=PASS"
+
       - name: Safe result
         run: |
           echo "============================================================"
