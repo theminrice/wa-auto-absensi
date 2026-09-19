@@ -314,6 +314,7 @@ jobs:
           grep -Fq 'beginShutdownAndDrain' src/remote-auth-v3.js
           grep -Fq 'REMOTE_V3_SAVE_QUEUE_DRAINED=YES' src/remote-auth-v3.js
           grep -Fq 'REMOTE_V3_SAVE_SKIPPED_SHUTDOWN=YES' src/remote-auth-v3.js
+          grep -Fq 'REMOTE_V3_PREQUEUED_SAVE_SKIPPED_SHUTDOWN=YES' src/remote-auth-v3.js
 
           for source in \
             src/wa-send-checkin-production.js \
