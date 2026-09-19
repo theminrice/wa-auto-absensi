@@ -1,32 +1,163 @@
 # wa-auto-absensi
 
-Tahap awal bot Auto Check In / Check Out WhatsApp.
+Bot otomatis **Check In / Check Out WhatsApp** berbasis GitHub Actions, WhatsApp Web, MongoDB Atlas, dan RemoteAuth V3.
 
-## Status V1
+Project ini sudah memiliki jalur **Testing** dan **Production** yang dipisahkan dengan guard ketat.
 
-V1 ini **belum mengirim WhatsApp**. Tujuannya memverifikasi format absensi dan aturan hari secara aman di GitHub Actions.
+## Status Saat Ini
 
-Target sementara:
+**Production V3 aktif.**
 
-- Grup: `Testing`
-- Production: `false`
-- WhatsApp send: `disabled`
+- Production group: `Aktif Tim Magang OCN`
+- Testing group: `Testing`
+- WhatsApp session: **RemoteAuth V3**
+- Session persistence: **MongoDB Atlas**
+- Production runner: **GitHub Actions**
+- Scheduler: **Cloudflare Worker**
+- Check In Testing end-to-end: ✅
+- Check Out Testing + foto + caption end-to-end: ✅
+- WhatsApp server ACK: ✅
+- RemoteAuth V3 restore tanpa QR: ✅
+- ACTIVE + LAST_GOOD session: ✅
+- Temporary MongoDB Atlas runner IP lifecycle: ✅
+- Production target guard: ✅
+- Hardcoded group ID: ❌
+- RemoteAuth V2 import pada sender production: ❌
+
+> Catatan: fix shutdown queue RemoteAuth V3 terbaru sudah lulus CI. Runtime production berikutnya menjadi proof alami terakhir untuk patch tersebut tanpa membuat pesan test tambahan ke grup utama.
+
+## Arsitektur
+
+```text
+Cloudflare Worker
+        |
+        | trigger sesuai jadwal
+        v
+GitHub Actions
+        |
+        +--> Temporary MongoDB Atlas runner IP
+        |
+        +--> Restore RemoteAuth V3
+        |
+        +--> Sync input dari self-chat WhatsApp
+        |      |
+        |      +--> p: <project>
+        |      |
+        |      +--> image + caption "p"
+        |
+        +--> Check In / Check Out sender
+        |
+        +--> Exact-name group validation
+        |
+        +--> WhatsApp send
+        |
+        +--> Server ACK verification
+        |
+        +--> RemoteAuth V3 save + shutdown drain
+        |
+        +--> Atlas runner IP cleanup
+```
+
+## Jadwal Production
+
+Scheduler production berada di Cloudflare Worker.
+
+Waktu operasional:
+
+| Action | Waktu |
+|---|---|
+| Check In | 06:00 WIB, Senin-Sabtu |
+| Check Out | 17:00 WIB, Senin-Sabtu |
+| Minggu | Tidak ada absensi otomatis |
+
+Workflow production GitHub:
+
+```text
+.github/workflows/wa-attendance-production-v1.yml
+```
+
+Workflow tersebut juga dapat dijalankan manual dengan `workflow_dispatch`.
+
+Manual production run membutuhkan:
+
+```text
+action  = checkin / checkout
+confirm = Production
+```
+
+## Target WhatsApp
+
+### Production
+
+```text
+Aktif Tim Magang OCN
+```
+
+Sender production melakukan pencarian berdasarkan **exact group name**.
+
+Group ID WhatsApp tidak di-hardcode.
+
+### Testing
+
+```text
+Testing
+```
+
+Testing digunakan untuk proof end-to-end tanpa mengirim pesan ke grup production.
+
+## Format Input dari Self-Chat
+
+### Project
+
+Project dibaca dari pesan:
+
+```text
+p: Melanjutkan audit sekuritas backend
+```
+
+Format parser:
+
+```text
+p: <project>
+```
+
+Prefix `p:` bersifat case-insensitive.
+
+Contoh valid:
+
+```text
+p: Melanjutkan audit sekuritas backend
+P: Membuat dokumentasi sistem
+```
+
+### Dokumentasi / Foto
+
+Dokumentasi dibaca dari:
+
+```text
+image
+caption: p
+```
+
+Syarat:
+
+- message berasal dari self-chat,
+- `hasMedia = true`,
+- media type = `image`,
+- caption exact = `p`.
 
 ## Aturan Membersihkan Ruangan
 
 - Senin: ✅
 - Kamis: ✅
-- Selasa/Rabu/Jumat: ❌
+- Selasa: ❌
+- Rabu: ❌
+- Jumat: ❌
+- Sabtu: ❌
 
-## Format project
+## Format Check In
 
-Project dibaca dari format:
-
-```text
-p:Melanjutkan audit sekuritas backend
-```
-
-## Check In
+Contoh:
 
 ```text
 Check In, Kamis 17 September 2026
@@ -36,7 +167,11 @@ Check In, Kamis 17 September 2026
 - 08.30 : Melanjutkan audit sekuritas backend
 ```
 
-## Check Out
+Pada hari tanpa jadwal membersihkan ruangan, baris tersebut tidak digunakan sesuai logic attendance.
+
+## Format Check Out
+
+Contoh:
 
 ```text
 Check Out, Kamis 17 September 2026
@@ -48,29 +183,399 @@ Check Out, Kamis 17 September 2026
 - 16.00 : Pulang✅
 ```
 
-## Test GitHub Actions
+Check Out mengirim dokumentasi/foto dengan caption attendance melalui jalur UI WhatsApp Web yang diverifikasi sebelum klik Send.
+
+## RemoteAuth V3
+
+RemoteAuth V3 dirancang agar session WhatsApp tetap dapat dipakai pada GitHub runner baru.
+
+Identifier utama:
+
+```text
+Client ID:
+wa-auto-absensi-remote-v3
+
+ACTIVE:
+RemoteAuth-wa-auto-absensi-remote-v3
+
+CANDIDATE:
+RemoteAuth-wa-auto-absensi-remote-v3-candidate
+
+LAST_GOOD:
+RemoteAuth-wa-auto-absensi-remote-v3-last-good
+```
+
+### Save Pipeline
+
+```text
+local active candidate
+        |
+        v
+ZIP validation
+        |
+        v
+save candidate
+        |
+        v
+candidate roundtrip validation
+        |
+        v
+preserve current ACTIVE -> LAST_GOOD
+        |
+        v
+promote candidate -> ACTIVE
+        |
+        v
+ACTIVE roundtrip validation
+        |
+        v
+candidate cleanup
+```
+
+ZIP validation memeriksa antara lain:
+
+- file tersedia,
+- ukuran minimum,
+- seluruh ZIP dapat dibaca/inflate,
+- jumlah entry,
+- total inflated bytes,
+- SHA-256.
+
+### Restore
+
+Urutan restore:
+
+```text
+ACTIVE
+  |
+  +--> valid -> continue
+  |
+  +--> invalid
+          |
+          v
+       LAST_GOOD
+          |
+          +--> valid -> fallback + best-effort self-heal ACTIVE
+```
+
+Tidak ada retry loop tanpa batas.
+
+### Shutdown Drain
+
+Sebelum client WhatsApp dihancurkan:
+
+```text
+shutdownStarted = true
+        |
+        v
+tolak save baru
+        |
+        v
+skip save lama yang masih antre
+        |
+        v
+tunggu save queue aktif selesai
+        |
+        v
+client.destroy()
+```
+
+Marker penting:
+
+```text
+REMOTE_V3_SHUTDOWN_STARTED=YES
+REMOTE_V3_SAVE_SKIPPED_SHUTDOWN=YES
+REMOTE_V3_PREQUEUED_SAVE_SKIPPED_SHUTDOWN=YES
+REMOTE_V3_SAVE_QUEUE_DRAINED=YES
+REMOTE_V3_SHUTDOWN_DRAIN=PASS
+```
+
+## MongoDB Atlas
+
+MongoDB digunakan untuk:
+
+- persistent RemoteAuth V3,
+- attendance input state,
+- dokumentasi attendance.
+
+GitHub runner menggunakan temporary Atlas access-list entry.
+
+Lifecycle:
+
+```text
+runner public IPv4
+        |
+        v
+Atlas temporary IP add
+        |
+        v
+wait ACTIVE
+        |
+        v
+run attendance
+        |
+        v
+delete temporary IP
+        |
+        v
+verify 404
+```
+
+Secret tidak ditulis ke repository.
+
+## Production Safety Guards
+
+Production sender memiliki guard berikut:
+
+- target exact `Aktif Tim Magang OCN`,
+- menolak reference ke group `Testing`,
+- tidak memakai hardcoded `@g.us` ID,
+- wajib menggunakan RemoteAuth V3,
+- QR pada cloud run dianggap error,
+- MongoDB session harus tersedia,
+- WhatsApp harus mencapai READY,
+- target harus benar-benar group,
+- server ACK harus terkonfirmasi,
+- RemoteAuth save queue harus drain sebelum shutdown.
+
+## Proof / Testing Workflows
+
+### Production V3 Readiness
+
+```text
+.github/workflows/wa-production-v3-readiness.yml
+```
+
+Tidak mengirim WhatsApp message.
+
+Membuktikan:
+
+- fresh runner,
+- RemoteAuth V3 restore,
+- no QR,
+- WhatsApp READY,
+- production self-chat sync.
+
+### Full Proof ke Testing
+
+```text
+.github/workflows/wa-production-v3-all-proof-testing.yml
+```
+
+Mengirim:
+
+```text
+1x Check In  -> Testing
+1x Check Out -> Testing + media/caption
+```
+
+Main production group dilarang pada proof ini.
+
+### Checkout E2E Proof
+
+```text
+.github/workflows/wa-production-v3-e2e-proof-testing.yml
+```
+
+Manual-only dan hanya menargetkan `Testing`.
+
+### Live Self-Chat Input Proof
+
+```text
+.github/workflows/wa-production-v3-live-self-chat-input-proof.yml
+```
+
+Digunakan untuk menguji jalur self-chat `p:` dan dokumentasi tanpa mengirim ke group.
+
+## Hasil Proof Terbaru
+
+Terakhir diverifikasi pada **19 September 2026**.
+
+### Check In -> Testing
+
+```text
+TARGET_GROUP_NAME=Testing
+TARGET_GROUP_SAFE=YES
+SERVER_ACK_CONFIRMED=YES
+MESSAGE_SENT=YES
+E2E_PROOF_CHECKIN=PASS
+```
+
+Status: **PASS**
+
+### Check Out -> Testing
+
+```text
+TARGET_GROUP_NAME=Testing
+TARGET_GROUP_SAFE=YES
+
+UI_PHOTO_VIDEO_PATH_CONFIRMED=YES
+UI_REAL_MEDIA_CAPTION_BOX_CONFIRMED=YES
+UI_FINAL_CAPTION_EXACT=YES
+UI_PHOTO_SEND_BUTTON_CLICKED=YES
+
+SERVER_ACK_CONFIRMED=YES
+MESSAGE_SENT=YES
+MEDIA_SENT=YES
+CAPTION_SENT=YES
+
+E2E_PROOF=PASS
+```
+
+Status: **PASS**
+
+### Production Group
+
+Jalur production menggunakan source V3 yang sama, tetapi targetnya:
+
+```text
+Aktif Tim Magang OCN
+```
+
+Real production send setelah patch shutdown queue terbaru belum dijadikan test tambahan secara sengaja untuk menghindari pesan duplikat. Verifikasi berikutnya dilakukan pada run production yang memang terjadwal.
+
+## NPM Scripts
+
+Script utama:
+
+```bash
+npm test
+
+npm run attendance:sync-once-production-v3
+
+npm run wa:send-checkin-production
+npm run wa:send-checkout-production
+
+npm run wa:remoteauth-v3-bootstrap
+npm run wa:remoteauth-v3-health
+
+npm run wa:send-checkin-v3-proof-testing
+npm run wa:send-checkout-v3-proof-testing
+
+npm run wa:input-parser-v3-proof
+npm run wa:live-self-chat-input-proof-v3
+```
+
+## Environment / Secrets
+
+Production membutuhkan secret seperti:
+
+```text
+MONGODB_URI
+
+ATLAS_CLIENT_ID
+ATLAS_CLIENT_SECRET
+ATLAS_PROJECT_ID
+```
+
+Jangan commit secret, QR session, MongoDB URI, token, password, atau credential lain ke repository.
+
+## Menjalankan Production Secara Manual
 
 Buka:
 
-`Actions` → `WA Auto Absensi - Safe Test` → `Run workflow`
+```text
+GitHub
+-> Actions
+-> WA Attendance Production V1
+-> Run workflow
+```
 
 Pilih:
 
-- `dry-run`
-- `checkin`
-- `checkout`
+```text
+action:
+  checkin
+atau
+  checkout
 
-Pada V1 semuanya hanya mencetak hasil ke log dan **tidak mengirim pesan WhatsApp**.
+confirm:
+  Production
+```
 
-## Tahap berikutnya
+Gunakan manual production run hanya jika memang ingin mengirim attendance ke grup utama.
 
-Setelah format V1 lulus, baru tambahkan:
+## Menjalankan Test Aman
 
-1. login WhatsApp Web,
-2. baca chat diri sendiri,
-3. cari `p:` terbaru,
-4. cari gambar dokumentasi caption `p`,
-5. kirim hanya ke grup `Testing`,
-6. anti-double-send,
-7. persistent session,
-8. scheduler.
+Untuk proof tanpa menyentuh grup utama, gunakan workflow yang menargetkan `Testing`.
+
+Sebelum rerun test yang benar-benar mengirim WhatsApp, periksa apakah run sebelumnya sudah mengirim pesan agar tidak membuat duplikat.
+
+## CI
+
+Workflow:
+
+```text
+.github/workflows/wa-ci.yml
+```
+
+CI memeriksa antara lain:
+
+- project tests,
+- dependency load,
+- syntax seluruh source WhatsApp,
+- RemoteAuth V3 no-send guards,
+- production V3 cutover guards,
+- Testing E2E guards,
+- full-proof guards,
+- `p:` / `p + image` parser proof,
+- live self-chat proof guards,
+- RemoteAuth V3 shutdown-drain guards.
+
+## Prinsip Safety Project
+
+Project ini menggunakan prinsip:
+
+```text
+verify first
+send once
+no blind retry
+exact target
+server ACK
+persistent session
+safe shutdown
+cleanup temporary access
+```
+
+Jika hasil send ambigu, jangan langsung rerun. Audit log terlebih dahulu untuk memastikan pesan belum terkirim.
+
+## Tech Stack
+
+- Node.js
+- JavaScript / CommonJS
+- GitHub Actions
+- Cloudflare Workers
+- MongoDB Atlas
+- Mongoose
+- whatsapp-web.js
+- wwebjs-mongo
+- Puppeteer / Chrome
+- unzipper
+
+## Current Production State
+
+```text
+Production target:
+Aktif Tim Magang OCN
+
+RemoteAuth:
+V3
+
+Testing Check In:
+PASS
+
+Testing Check Out:
+PASS
+
+Testing media + caption:
+PASS
+
+Server ACK:
+PASS
+
+Production source guards:
+PASS
+
+Latest CI:
+PASS
+```
