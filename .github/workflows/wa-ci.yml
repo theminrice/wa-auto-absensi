@@ -236,6 +236,21 @@ jobs:
           echo "FULL_PROOF_MAIN_GROUP_REFERENCE=NO"
           echo "FULL_PROOF_STATIC_GUARD=PASS"
 
+      - name: Run P and P-colon parser proof
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          npm run wa:input-parser-v3-proof | tee input-parser-proof.log
+
+          grep -Fxq 'P_COLON_RUNTIME_PARSE=PASS' input-parser-proof.log
+          grep -Fxq 'P_IMAGE_RUNTIME_PARSE=PASS' input-parser-proof.log
+          grep -Fxq 'P_AND_P_COLON_PROOF=PASS' input-parser-proof.log
+          grep -Fxq 'PRODUCTION_ATTENDANCE_DATA_MODIFIED=NO' input-parser-proof.log
+          grep -Fxq 'WHATSAPP_MESSAGE_SENT=NO' input-parser-proof.log
+
+          echo "INPUT_PARSER_PROOF_CI=PASS"
+
       - name: Safe result
         run: |
           echo "============================================================"
