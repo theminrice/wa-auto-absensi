@@ -217,9 +217,7 @@ async function main() {
   );
 
   assert.equal(
-    (candidateWorkflow.match(
-      /mkdir -p "\\$WWEBJS_REMOTE_DATA_PATH"/g
-    ) || []).length,
+    candidateWorkflow.split('mkdir -p "$WWEBJS_REMOTE_DATA_PATH"').length - 1,
     2,
     'Each Testing sender must create local RemoteAuth data dir'
   );
