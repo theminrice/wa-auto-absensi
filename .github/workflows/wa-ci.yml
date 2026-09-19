@@ -52,6 +52,7 @@ jobs:
           node --check src/wa-remote-auth-v3-health.js
           node --check src/wa-remote-auth-v3-seed-last-good.js
           node --check src/wa-self-chat-ingest-production-v3.js
+          node --check src/wa-send-checkout-v3-proof-testing.js
           echo "SOURCE_SYNTAX=PASS"
 
       - name: Verify RemoteAuth V3 no-send guards
@@ -142,6 +143,60 @@ jobs:
           echo "PRODUCTION_V2_IMPORT_REMAINS=NO"
           echo "PRODUCTION_V3_SYNC_SEND_CALL=NO"
           echo "PRODUCTION_REMOTEAUTH_V3_STATIC_GUARD=PASS"
+
+      - name: Verify V3 E2E proof Testing guards
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          PROOF=src/wa-send-checkout-v3-proof-testing.js
+
+          grep -Fq \
+            'WA_PRODUCTION_V3_E2E_PROOF_TESTING_V1' \
+            "$PROOF"
+
+          grep -Fq \
+            "EXPECTED_GROUP_NAME = 'Testing'" \
+            "$PROOF"
+
+          grep -Fq \
+            "require('./remote-auth-v3')" \
+            "$PROOF"
+
+          grep -Fq \
+            'REMOTE_AUTH_VERSION=V3' \
+            "$PROOF"
+
+          grep -Fq \
+            'E2E_PROOF_ONE_REAL_SEND_MAX=YES' \
+            "$PROOF"
+
+          grep -Fq \
+            'E2E_PROOF_AUTOMATIC_RETRY=NO' \
+            "$PROOF"
+
+          grep -Fq \
+            'UI_SEND_COMMIT_CONFIRMED=YES' \
+            "$PROOF"
+
+          grep -Fq \
+            'SERVER_ACK_CONFIRMED=YES' \
+            "$PROOF"
+
+          grep -Fq \
+            'E2E_PROOF=PASS' \
+            "$PROOF"
+
+          if grep -Fq \
+            'Aktif Tim Magang OCN' \
+            "$PROOF"
+          then
+            echo "E2E_PROOF_MAIN_GROUP_REFERENCE=YES"
+            exit 40
+          fi
+
+          echo "E2E_PROOF_MAIN_GROUP_REFERENCE=NO"
+          echo "E2E_PROOF_STATIC_GUARD=PASS"
 
       - name: Safe result
         run: |
