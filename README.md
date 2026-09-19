@@ -146,6 +146,40 @@ Syarat:
 - media type = `image`,
 - caption exact = `p`.
 
+## Perintah Libur — `l:`
+
+Perintah libur dikirim lewat **chat diri sendiri**. `p:x` **tidak digunakan untuk libur**; satu-satunya perintah libur adalah `l:`.
+
+| Pesan | Arti |
+|---|---|
+| `l:19/9` | Libur 19 September |
+| `l:19/9-21/9` | Libur 19 sampai 21 September, **inklusif** |
+| `l:30/9-2/10` | Libur 30 September sampai 2 Oktober |
+| `l:30/12-2/1` | Lintas tahun: 30 Desember sampai 2 Januari tahun berikutnya |
+| `l:19/9/2026` | Tahun eksplisit (opsional) |
+
+- Tanpa tahun, sistem memakai **tahun saat pesan dikirim dalam zona Asia/Jakarta**, bukan tahun ketika catch-up berjalan.
+- Perintah `l:` **terbaru menggantikan rentang libur sebelumnya**; bukan menambahkan daftar rentang.
+- Di dalam rentang libur, **Check In dan Check Out sama-sama SAFE SKIP**: tidak ada pesan dikirim ke grup.
+- Hari di luar rentang kembali mengikuti jadwal otomatis.
+- Project `p:` dan dokumentasi gambar-caption `p` **tidak dihapus atau diganti** oleh `l:`.
+- Tanggal tidak valid seperti `l:31/2` atau rentang terbalik ditolak; sync production gagal aman alih-alih menganggapnya tidak ada libur.
+- Kirim perintah `l:` sebelum jadwal absensi; perintah yang baru masuk setelah send tidak menarik kembali pesan yang sudah dikirim.
+
+Marker saat jadwal jatuh pada tanggal libur:
+
+```text
+LEAVE_TODAY=YES
+ATTENDANCE_LEAVE_SKIP=YES
+REASON=LEAVE_DATE
+ACTION=SKIP
+MESSAGE_SENT=NO
+ATTENDANCE_RESULT=LEAVE_SKIP
+PRODUCTION_CLOUD_ATTENDANCE=PASS
+```
+
+**Status fitur:** source dan unit test ada; real self-chat `l:` dan natural production leave-skip baru dinyatakan terverifikasi setelah run yang relevan lulus. Jangan mengirim dummy attendance ke grup utama demi pengujian.
+
 ## Aturan Membersihkan Ruangan
 
 - Senin: ✅

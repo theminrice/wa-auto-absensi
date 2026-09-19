@@ -18,8 +18,13 @@ const {
 } = require('./attendance');
 
 const {
-  getLatestProject
+  getLatestProject,
+  getLatestLeave
 } = require('./attendance-input-store');
+
+const {
+  evaluateLeaveForDate
+} = require('./attendance-leave');
 
 const EXPECTED_GROUP_NAME = 'Aktif Tim Magang OCN';
 
@@ -380,6 +385,77 @@ if (process.env.MONGODB_URI) {
     }
 
     console.log('ATTENDANCE_INPUT_STORE_READY=YES');
+
+    // ATTENDANCE_LEAVE_SAFE_SKIP_V1
+    // Read leave from MongoDB before project/media/send.
+    const leaveDocument =
+      await timeout(
+        getLatestLeave(
+          mongoose.connection
+        ),
+        30000,
+        'GET_LATEST_LEAVE'
+      );
+
+    const leaveStatus =
+      evaluateLeaveForDate(
+        leaveDocument,
+        new Date()
+      );
+
+    console.log(
+      'LEAVE_CHECK_DATE=' +
+      leaveStatus.dateKey
+    );
+
+    console.log(
+      'LEAVE_PLAN_FOUND=' +
+      (leaveDocument ? 'YES' : 'NO')
+    );
+
+    if (leaveDocument) {
+      console.log(
+        'LEAVE_START_DATE=' +
+        leaveDocument.startDate
+      );
+
+      console.log(
+        'LEAVE_END_DATE=' +
+        leaveDocument.endDate
+      );
+    }
+
+    if (leaveStatus.onLeave) {
+      console.log(
+        'LEAVE_TODAY=YES'
+      );
+
+      console.log(
+        'ATTENDANCE_LEAVE_SKIP=YES'
+      );
+
+      console.log(
+        'REASON=LEAVE_DATE'
+      );
+
+      console.log(
+        'ACTION=SKIP'
+      );
+
+      console.log(
+        'MESSAGE_SENT=NO'
+      );
+
+      console.log(
+        'STEP_PRODUCTION_CHECKIN=SKIPPED_LEAVE'
+      );
+
+      return await finish(client, 0);
+    }
+
+    console.log(
+      'LEAVE_TODAY=NO'
+    );
 
     const latestProjectDocument =
       await timeout(

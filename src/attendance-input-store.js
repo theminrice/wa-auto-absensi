@@ -491,6 +491,124 @@ async function saveDocumentation(
   };
 }
 
+// ATTENDANCE_LEAVE_CURRENT_STATE_V1
+// A newer l: command replaces the previous leave range only.
+// Existing project/documentation rows are never modified.
+async function saveLeave(
+  connection,
+  leave,
+  createdAt = new Date()
+) {
+  const collection =
+    getInputCollection(connection);
+
+  if (
+    !leave ||
+    typeof leave.startDate !== 'string' ||
+    typeof leave.endDate !== 'string'
+  ) {
+    throw new Error(
+      'LEAVE_PLAN_INVALID'
+    );
+  }
+
+  const {
+    evaluateLeaveForDate
+  } = require('./attendance-leave');
+
+  // Validate stored bounds, even when not currently on leave.
+  evaluateLeaveForDate(leave, createdAt);
+
+  const document = {
+    version: STORAGE_VERSION,
+    kind: 'leave',
+    startDate: leave.startDate,
+    endDate: leave.endDate,
+    createdAt: normalizeDate(createdAt),
+    source: 'manual'
+  };
+
+  const existingRows =
+    await collection
+      .find(
+        { kind: 'leave' },
+        {
+          projection: {
+            _id: 1,
+            sourceMessageId: 1,
+            createdAt: 1
+          }
+        }
+      )
+      .sort({
+        createdAt: -1,
+        _id: -1
+      })
+      .toArray();
+
+  await preserveSourceMessageIds(
+    collection,
+    existingRows
+  );
+
+  if (existingRows.length > 0) {
+    const canonicalId =
+      existingRows[0]._id;
+
+    const result =
+      await collection.updateOne(
+        { _id: canonicalId },
+        {
+          $set: document,
+          $unset: {
+            sourceMessageId: ''
+          }
+        }
+      );
+
+    if (result.matchedCount !== 1) {
+      throw new Error(
+        'LEAVE_CURRENT_ROW_UPDATE_FAILED'
+      );
+    }
+
+    await collection.deleteMany({
+      kind: 'leave',
+      _id: {
+        $ne: canonicalId
+      }
+    });
+
+    return {
+      ...document,
+      _id: canonicalId
+    };
+  }
+
+  const result =
+    await collection.insertOne(document);
+
+  return {
+    ...document,
+    _id: result.insertedId
+  };
+}
+
+async function getLatestLeave(connection) {
+  const collection =
+    getInputCollection(connection);
+
+  return collection.findOne(
+    { kind: 'leave' },
+    {
+      sort: {
+        createdAt: -1,
+        _id: -1
+      }
+    }
+  );
+}
+
 async function getLatestProject(connection) {
   const collection =
     getInputCollection(connection);
@@ -588,6 +706,8 @@ module.exports = {
   ensureAttendanceIndexes,
   saveProject,
   saveDocumentation,
+  saveLeave,
+  getLatestLeave,
   getLatestProject,
   getLatestDocumentationAfter,
   downloadDocumentation

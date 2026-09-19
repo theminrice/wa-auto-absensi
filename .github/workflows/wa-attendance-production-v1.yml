@@ -509,6 +509,38 @@ jobs:
 
           echo "QR_REQUIRED_IN_CLOUD=NO"
 
+          # ATTENDANCE_LEAVE_SAFE_SKIP_V1
+          # A verified leave date is a successful NO-SEND outcome.
+          if grep -Fxq 'ATTENDANCE_LEAVE_SKIP=YES' attendance.log; then
+            grep -Fxq 'LEAVE_TODAY=YES' attendance.log
+            grep -Fxq 'REASON=LEAVE_DATE' attendance.log
+            grep -Fxq 'ACTION=SKIP' attendance.log
+            grep -Fxq 'MESSAGE_SENT=NO' attendance.log
+            grep -Eq '^LEAVE_CHECK_DATE=[0-9]{4}-[0-9]{2}-[0-9]{2}$' attendance.log
+
+            if grep -Fxq 'MESSAGE_SENT=YES' attendance.log ||
+               grep -Fxq 'SEND_START=YES' attendance.log; then
+              echo "ATTENDANCE_LEAVE_SEND_VIOLATION=YES"
+              exit 42
+            fi
+
+            case "$ATTENDANCE_ACTION" in
+              checkin)
+                grep -Fxq 'STEP_PRODUCTION_CHECKIN=SKIPPED_LEAVE' attendance.log
+                ;;
+              checkout)
+                grep -Fxq 'STEP_PRODUCTION_CHECKOUT=SKIPPED_LEAVE' attendance.log
+                ;;
+              *)
+                exit 43
+                ;;
+            esac
+
+            echo "ATTENDANCE_RESULT=LEAVE_SKIP"
+            echo "PRODUCTION_CLOUD_ATTENDANCE=PASS"
+            exit 0
+          fi
+
           if grep -Fxq \
             'MESSAGE_SENT=YES' \
             attendance.log
