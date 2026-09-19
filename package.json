@@ -15,7 +15,9 @@
     "attendance:listen": "node src/wa-self-chat-ingest.js",
     "attendance:sync-once": "node src/wa-self-chat-ingest.js --sync-once",
     "wa:send-checkin-production": "node src/wa-send-checkin-production.js",
-    "wa:send-checkout-production": "node src/wa-send-checkout-production.js"
+    "wa:send-checkout-production": "node src/wa-send-checkout-production.js",
+    "wa:remoteauth-v3-bootstrap": "node src/wa-remote-auth-v3-bootstrap.js",
+    "wa:remoteauth-v3-health": "node src/wa-remote-auth-v3-health.js"
   },
   "engines": {
     "node": ">=20"
@@ -24,6 +26,7 @@
     "mongoose": "8.24.4",
     "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "https://codeload.github.com/cripperzprodigy/whatsapp-web.js/tar.gz/51914e67240b9c5fb63ef376ec94f1a10068bc75",
-    "wwebjs-mongo": "1.1.0"
+    "wwebjs-mongo": "1.1.0",
+    "unzipper": "0.12.3"
   }
 }
