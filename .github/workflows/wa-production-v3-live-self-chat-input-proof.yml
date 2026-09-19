@@ -1,0 +1,497 @@
+name: WA Production V3 Live Self-Chat Input Proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type Live-SelfChat-V3-Proof
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wa-production-v3-live-self-chat-proof
+  cancel-in-progress: false
+
+jobs:
+  production-v3-live-self-chat-proof:
+    name: Production V3 Live Self-Chat Input Proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+      ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+      ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Locate Chrome
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CHROME_PATH="$(
+            command -v google-chrome ||
+            command -v google-chrome-stable ||
+            command -v chromium ||
+            command -v chromium-browser ||
+            true
+          )"
+
+          if [ -z "$CHROME_PATH" ]; then
+            echo "CHROME_NOT_FOUND=YES"
+            exit 1
+          fi
+
+          echo "CHROME_PATH=$CHROME_PATH" >> "$GITHUB_ENV"
+          echo "CHROME_FOUND=YES"
+
+      - name: Add temporary Atlas runner IP
+        shell: bash
+        env:
+          ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+          ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+          ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+        run: |
+          set -Eeuo pipefail
+
+          : "${ATLAS_CLIENT_ID:?ATLAS_CLIENT_ID missing}"
+          : "${ATLAS_CLIENT_SECRET:?ATLAS_CLIENT_SECRET missing}"
+          : "${ATLAS_PROJECT_ID:?ATLAS_PROJECT_ID missing}"
+
+          API_ACCEPT="application/vnd.atlas.2025-03-12+json"
+
+          TOKEN_JSON="$(
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --request POST \
+              --url "https://cloud.mongodb.com/api/oauth/token" \
+              --user "${ATLAS_CLIENT_ID}:${ATLAS_CLIENT_SECRET}" \
+              --header "Accept: application/json" \
+              --header "Content-Type: application/x-www-form-urlencoded" \
+              --data "grant_type=client_credentials"
+          )"
+
+          ACCESS_TOKEN="$(
+            printf '%s' "$TOKEN_JSON" |
+              jq -r '.access_token // empty'
+          )"
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ATLAS_OAUTH=FAIL"
+            exit 30
+          fi
+
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "ATLAS_OAUTH=PASS"
+
+          RUNNER_IP="$(
+            curl \
+              -4 \
+              --fail \
+              --silent \
+              --show-error \
+              "https://api.ipify.org"
+          )"
+
+          python3 - "$RUNNER_IP" <<'PY'
+          import ipaddress
+          import sys
+
+          ip = ipaddress.ip_address(sys.argv[1].strip())
+
+          if ip.version != 4:
+              raise SystemExit("Runner public address is not IPv4")
+          PY
+
+          echo "::add-mask::$RUNNER_IP"
+
+          echo "ATLAS_RUNNER_IP=$RUNNER_IP" >> "$GITHUB_ENV"
+          echo "ATLAS_IP_CREATED=0" >> "$GITHUB_ENV"
+
+          BASE_URL="https://cloud.mongodb.com/api/atlas/v2/groups/${ATLAS_PROJECT_ID}/accessList"
+
+          CHECK_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --output atlas-existing.json \
+              --write-out "%{http_code}" \
+              --request GET \
+              --url "${BASE_URL}/${RUNNER_IP}" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: ${API_ACCEPT}"
+          )"
+
+          if [ "$CHECK_CODE" = "200" ]; then
+
+            echo "ATLAS_IP_PREEXISTING=YES"
+
+          elif [ "$CHECK_CODE" = "404" ]; then
+
+            echo "ATLAS_IP_PREEXISTING=NO"
+
+            DELETE_AFTER="$(
+              date -u \
+                -d '+30 minutes' \
+                '+%Y-%m-%dT%H:%M:%SZ'
+            )"
+
+            COMMENT="WA Auto Absensi RemoteAuth ${GITHUB_RUN_ID}"
+
+            PAYLOAD="$(
+              jq -nc \
+                --arg ip "$RUNNER_IP" \
+                --arg comment "$COMMENT" \
+                --arg deleteAfterDate "$DELETE_AFTER" \
+                '[{
+                  ipAddress: $ip,
+                  comment: $comment,
+                  deleteAfterDate: $deleteAfterDate
+                }]'
+            )"
+
+            ADD_CODE="$(
+              curl \
+                --silent \
+                --show-error \
+                --output atlas-add.json \
+                --write-out "%{http_code}" \
+                --request POST \
+                --url "$BASE_URL" \
+                --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+                --header "Accept: ${API_ACCEPT}" \
+                --header "Content-Type: application/json" \
+                --data "$PAYLOAD"
+            )"
+
+            if [ "$ADD_CODE" != "200" ] &&
+               [ "$ADD_CODE" != "201" ]; then
+
+              echo "ATLAS_IP_ADD=FAIL"
+              exit 31
+            fi
+
+            echo "ATLAS_IP_CREATED=1" >> "$GITHUB_ENV"
+
+            echo "ATLAS_IP_ADD=PASS"
+            echo "ATLAS_IP_TEMPORARY_EXPIRY=ENABLED"
+
+          else
+
+            echo "ATLAS_IP_PRECHECK_HTTP=${CHECK_CODE}"
+            echo "ATLAS_IP_PRECHECK=FAIL"
+            exit 32
+          fi
+
+          ACTIVE=0
+
+          for ATTEMPT in $(seq 1 24); do
+
+            STATUS_JSON="$(
+              curl \
+                --fail-with-body \
+                --silent \
+                --show-error \
+                --request GET \
+                --url "${BASE_URL}/${RUNNER_IP}/status" \
+                --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+                --header "Accept: ${API_ACCEPT}"
+            )"
+
+            STATUS="$(
+              printf '%s' "$STATUS_JSON" |
+                jq -r '.STATUS // .status // empty'
+            )"
+
+            echo "ATLAS_IP_STATUS=${STATUS:-UNKNOWN}"
+
+            if [ "$STATUS" = "ACTIVE" ]; then
+              ACTIVE=1
+              break
+            fi
+
+            if [ "$STATUS" = "FAILED" ]; then
+              echo "ATLAS_IP_ACTIVATION=FAIL"
+              exit 33
+            fi
+
+            sleep 5
+          done
+
+          if [ "$ACTIVE" != "1" ]; then
+            echo "ATLAS_IP_ACTIVATION=TIMEOUT"
+            exit 34
+          fi
+
+          rm -f atlas-existing.json atlas-add.json
+
+          echo "ATLAS_IP_ACTIVATION=PASS"
+          echo "ATLAS_DYNAMIC_IP_READY=YES"
+      - name: Verify live proof confirmation and source isolation
+        shell: bash
+        env:
+          PROOF_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -Eeuo pipefail
+
+          if [ "$PROOF_CONFIRM" != "Live-SelfChat-V3-Proof" ]; then
+            echo "LIVE_SELF_CHAT_CONFIRMATION=FAIL"
+            exit 80
+          fi
+
+          echo "LIVE_SELF_CHAT_CONFIRMATION=PASS"
+
+          LIVE=src/wa-live-self-chat-input-proof-v3.js
+          GUARD=src/wa-attendance-canonical-guard.js
+
+          grep -Fq 'LIVE_PROOF_P_COLON_PARSE=PASS' "$LIVE"
+          grep -Fq 'LIVE_PROOF_P_IMAGE_PARSE=PASS' "$LIVE"
+          grep -Fq 'LIVE_PROOF_SELF_CHAT_CLEANUP=PASS' "$LIVE"
+          grep -Fq 'LIVE_PROOF_TOTAL_SELF_CHAT_SENDS=2' "$LIVE"
+
+          if grep -Fq 'Aktif Tim Magang OCN' "$LIVE"; then
+            echo "LIVE_SELF_CHAT_MAIN_GROUP_REFERENCE=YES"
+            exit 81
+          fi
+
+          if grep -Fq "EXPECTED_GROUP_NAME" "$LIVE"; then
+            echo "LIVE_SELF_CHAT_GROUP_TARGET_LOGIC=YES"
+            exit 82
+          fi
+
+          echo "LIVE_SELF_CHAT_MAIN_GROUP_REFERENCE=NO"
+          echo "LIVE_SELF_CHAT_GROUP_TARGET_LOGIC=NO"
+          echo "LIVE_SELF_CHAT_SOURCE_ISOLATION=PASS"
+
+      - name: Snapshot production attendance canonical state
+        shell: bash
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+        run: |
+          set -Eeuo pipefail
+
+          rm -f canonical-before.json
+
+          node src/wa-attendance-canonical-guard.js \
+            --snapshot canonical-before.json \
+            2>&1 | tee canonical-snapshot.log
+
+          grep -Fxq 'CANONICAL_SNAPSHOT=PASS' canonical-snapshot.log
+
+          test -s canonical-before.json
+
+          echo "LIVE_SELF_CHAT_CANONICAL_SNAPSHOT=PASS"
+
+      - name: Run live V3 self-chat input proof
+        shell: bash
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-live-self-chat-proof
+          TZ: Asia/Jakarta
+        run: |
+          set -Eeuo pipefail
+
+          mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
+
+          rm -f live-self-chat-proof.log
+
+          npm run wa:live-self-chat-input-proof-v3 \
+            2>&1 | tee live-self-chat-proof.log
+
+          grep -Fxq 'LIVE_PROOF_V3_ACTIVE_PRECHECK=PASS' live-self-chat-proof.log
+          grep -Fxq 'LIVE_PROOF_WHATSAPP_READY=YES' live-self-chat-proof.log
+          grep -Fxq 'LIVE_PROOF_PROJECT_SELF_CHAT=PASS' live-self-chat-proof.log
+          grep -Fxq 'LIVE_PROOF_P_COLON_PARSE=PASS' live-self-chat-proof.log
+          grep -Fxq 'LIVE_PROOF_PROJECT_MESSAGE_SENT=YES' live-self-chat-proof.log
+          grep -Fxq 'LIVE_PROOF_IMAGE_SELF_CHAT=PASS' live-self-chat-proof.log
+          grep -Fxq 'LIVE_PROOF_P_IMAGE_PARSE=PASS' live-self-chat-proof.log
+          grep -Fxq 'LIVE_PROOF_IMAGE_DOWNLOAD=PASS' live-self-chat-proof.log
+          grep -Fxq 'LIVE_PROOF_IMAGE_MESSAGE_SENT=YES' live-self-chat-proof.log
+          grep -Fxq 'LIVE_PROOF_SELF_CHAT_CLEANUP=PASS' live-self-chat-proof.log
+          grep -Fxq 'LIVE_PROOF_ATTENDANCE_CANONICAL_DB_WRITE=NO' live-self-chat-proof.log
+          grep -Fxq 'LIVE_PROOF_GROUP_MESSAGE_SENT=NO' live-self-chat-proof.log
+          grep -Fxq 'LIVE_PROOF_TOTAL_SELF_CHAT_SENDS=2' live-self-chat-proof.log
+          grep -Fxq 'LIVE_PROOF_FINAL=PASS' live-self-chat-proof.log
+
+          if grep -Fxq 'LIVE_PROOF_QR_REQUIRED=YES' live-self-chat-proof.log; then
+            echo "LIVE_SELF_CHAT_QR_REQUIRED=YES"
+            exit 83
+          fi
+
+          echo "LIVE_SELF_CHAT_QR_REQUIRED=NO"
+          echo "LIVE_SELF_CHAT_RUNTIME=PASS"
+
+      - name: Run exact Production V3 sync after revoke
+        shell: bash
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-live-self-chat-proof-sync
+          TZ: Asia/Jakarta
+        run: |
+          set -Eeuo pipefail
+
+          mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
+
+          rm -f live-self-chat-post-sync.log
+
+          npm run attendance:sync-once-production-v3 \
+            2>&1 | tee live-self-chat-post-sync.log
+
+          grep -Fxq 'AUTH_MODE=REMOTE' live-self-chat-post-sync.log
+          grep -Fxq 'REMOTE_AUTH_VERSION=V3' live-self-chat-post-sync.log
+          grep -Fxq 'REMOTE_V3_ACTIVE_RESTORE=PASS' live-self-chat-post-sync.log
+          grep -Fxq 'SELF_CHAT_CATCHUP_STABLE=YES' live-self-chat-post-sync.log
+          grep -Fxq 'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS' live-self-chat-post-sync.log
+          grep -Fxq 'ATTENDANCE_SYNC_ONCE=PASS' live-self-chat-post-sync.log
+
+          echo "LIVE_SELF_CHAT_POST_REVOKE_PRODUCTION_SYNC=PASS"
+
+      - name: Compare production attendance canonical state
+        shell: bash
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+        run: |
+          set -Eeuo pipefail
+
+          test -s canonical-before.json
+
+          node src/wa-attendance-canonical-guard.js \
+            --compare canonical-before.json \
+            2>&1 | tee canonical-compare.log
+
+          grep -Fxq 'CANONICAL_PROJECT_MATCH=YES' canonical-compare.log
+          grep -Fxq 'CANONICAL_DOCUMENTATION_MATCH=YES' canonical-compare.log
+          grep -Fxq 'CANONICAL_OVERALL_MATCH=YES' canonical-compare.log
+          grep -Fxq 'CANONICAL_COMPARE=PASS' canonical-compare.log
+
+          echo "LIVE_SELF_CHAT_PRODUCTION_CANONICAL_UNCHANGED=YES"
+          echo "LIVE_SELF_CHAT_FULL_PROOF=PASS"
+
+      - name: Remove temporary Atlas runner IP
+        if: always()
+        shell: bash
+        env:
+          ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+          ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+          ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+          ATLAS_RUNNER_IP: ${{ env.ATLAS_RUNNER_IP }}
+          ATLAS_IP_CREATED: ${{ env.ATLAS_IP_CREATED }}
+        run: |
+          set -Eeuo pipefail
+
+          if [ -z "${ATLAS_RUNNER_IP:-}" ]; then
+            echo "ATLAS_IP_CLEANUP=SKIPPED_NO_RUNNER_IP"
+            exit 0
+          fi
+
+          if [ "${ATLAS_IP_CREATED:-0}" != "1" ]; then
+            echo "ATLAS_IP_CLEANUP=SKIPPED_PREEXISTING"
+            exit 0
+          fi
+
+          API_ACCEPT="application/vnd.atlas.2025-03-12+json"
+
+          TOKEN_JSON="$(
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --request POST \
+              --url "https://cloud.mongodb.com/api/oauth/token" \
+              --user "${ATLAS_CLIENT_ID}:${ATLAS_CLIENT_SECRET}" \
+              --header "Accept: application/json" \
+              --header "Content-Type: application/x-www-form-urlencoded" \
+              --data "grant_type=client_credentials"
+          )"
+
+          ACCESS_TOKEN="$(
+            printf '%s' "$TOKEN_JSON" |
+              jq -r '.access_token // empty'
+          )"
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ATLAS_CLEANUP_OAUTH=FAIL"
+            exit 40
+          fi
+
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "::add-mask::$ATLAS_RUNNER_IP"
+
+          BASE_URL="https://cloud.mongodb.com/api/atlas/v2/groups/${ATLAS_PROJECT_ID}/accessList"
+
+          DELETE_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --request DELETE \
+              --url "${BASE_URL}/${ATLAS_RUNNER_IP}" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: ${API_ACCEPT}"
+          )"
+
+          if [ "$DELETE_CODE" != "204" ] &&
+             [ "$DELETE_CODE" != "404" ]; then
+
+            echo "ATLAS_IP_CLEANUP=FAIL"
+            echo "ATLAS_IP_CLEANUP_HTTP=${DELETE_CODE}"
+            exit 41
+          fi
+
+          VERIFY_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --request GET \
+              --url "${BASE_URL}/${ATLAS_RUNNER_IP}" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: ${API_ACCEPT}"
+          )"
+
+          if [ "$VERIFY_CODE" != "404" ]; then
+            echo "ATLAS_IP_CLEANUP_VERIFY=FAIL"
+            exit 42
+          fi
+
+          echo "ATLAS_IP_CLEANUP=PASS"
+          echo "ATLAS_IP_CLEANUP_VERIFY=PASS"
+
+      - name: Cleanup live proof local state
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          rm -rf \
+            "${RUNNER_TEMP}/wa-auto-absensi-live-self-chat-proof" \
+            "${RUNNER_TEMP}/wa-auto-absensi-live-self-chat-proof-sync"
+
+          rm -f \
+            canonical-before.json \
+            canonical-snapshot.log \
+            canonical-compare.log \
+            live-self-chat-proof.log \
+            live-self-chat-post-sync.log
+
+          echo "LIVE_SELF_CHAT_LOCAL_STATE_REMOVED=YES"

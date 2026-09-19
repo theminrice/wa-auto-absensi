@@ -55,6 +55,8 @@ jobs:
           node --check src/wa-send-checkout-v3-proof-testing.js
           node --check src/wa-send-checkin-v3-proof-testing.js
           node --check src/wa-input-parser-v3-proof.js
+          node --check src/wa-live-self-chat-input-proof-v3.js
+          node --check src/wa-attendance-canonical-guard.js
           echo "SOURCE_SYNTAX=PASS"
 
       - name: Verify RemoteAuth V3 no-send guards
@@ -250,6 +252,59 @@ jobs:
           grep -Fxq 'WHATSAPP_MESSAGE_SENT=NO' input-parser-proof.log
 
           echo "INPUT_PARSER_PROOF_CI=PASS"
+
+      - name: Verify live self-chat proof guards
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          LIVE=src/wa-live-self-chat-input-proof-v3.js
+          GUARD=src/wa-attendance-canonical-guard.js
+
+          grep -Fq 'REAL SELF-CHAT: p: PROJECT + IMAGE CAPTION p' "$LIVE"
+          grep -Fq 'LIVE_PROOF_P_COLON_PARSE=PASS' "$LIVE"
+          grep -Fq 'LIVE_PROOF_P_IMAGE_PARSE=PASS' "$LIVE"
+          grep -Fq 'LIVE_PROOF_SELF_CHAT_CLEANUP=PASS' "$LIVE"
+          grep -Fq 'LIVE_PROOF_FAILSAFE_REVOKE_VISIBILITY' "$LIVE"
+          grep -Fq 'LIVE_PROOF_TOTAL_SELF_CHAT_SENDS=2' "$LIVE"
+          grep -Fq 'LIVE_PROOF_GROUP_MESSAGE_SENT=NO' "$LIVE"
+
+          SEND_CALLS="$(grep -Fc 'client.sendMessage(' "$LIVE" || true)"
+          if [ "$SEND_CALLS" != "2" ]; then
+            echo "LIVE_PROOF_SEND_CALL_COUNT=$SEND_CALLS"
+            exit 70
+          fi
+
+          if grep -Fq 'Aktif Tim Magang OCN' "$LIVE"; then
+            echo "LIVE_PROOF_MAIN_GROUP_REFERENCE=YES"
+            exit 71
+          fi
+
+          if grep -Fq "EXPECTED_GROUP_NAME" "$LIVE"; then
+            echo "LIVE_PROOF_GROUP_TARGET_LOGIC=YES"
+            exit 72
+          fi
+
+          if grep -Fq "attendance-input-store" "$LIVE"; then
+            echo "LIVE_PROOF_ATTENDANCE_STORE_IMPORT=YES"
+            exit 73
+          fi
+
+          grep -Fq 'CANONICAL_SNAPSHOT=PASS' "$GUARD"
+          grep -Fq 'CANONICAL_COMPARE=PASS' "$GUARD"
+          grep -Fq 'CANONICAL_STATE_CHANGED' "$GUARD"
+
+          if grep -Eq '\.(insertOne|updateOne|deleteOne|deleteMany|replaceOne)\(' "$GUARD"; then
+            echo "CANONICAL_GUARD_WRITE_CALL=YES"
+            exit 74
+          fi
+
+          echo "LIVE_PROOF_SEND_CALL_COUNT=2"
+          echo "LIVE_PROOF_MAIN_GROUP_REFERENCE=NO"
+          echo "LIVE_PROOF_GROUP_TARGET_LOGIC=NO"
+          echo "LIVE_PROOF_ATTENDANCE_STORE_IMPORT=NO"
+          echo "CANONICAL_GUARD_WRITE_CALL=NO"
+          echo "LIVE_SELF_CHAT_PROOF_STATIC_GUARD=PASS"
 
       - name: Safe result
         run: |
