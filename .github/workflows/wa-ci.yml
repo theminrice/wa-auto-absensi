@@ -53,6 +53,8 @@ jobs:
           node --check src/wa-remote-auth-v3-seed-last-good.js
           node --check src/wa-self-chat-ingest-production-v3.js
           node --check src/wa-send-checkout-v3-proof-testing.js
+          node --check src/wa-send-checkin-v3-proof-testing.js
+          node --check src/wa-input-parser-v3-proof.js
           echo "SOURCE_SYNTAX=PASS"
 
       - name: Verify RemoteAuth V3 no-send guards
@@ -197,6 +199,57 @@ jobs:
 
           echo "E2E_PROOF_MAIN_GROUP_REFERENCE=NO"
           echo "E2E_PROOF_STATIC_GUARD=PASS"
+
+      - name: Verify full V3 proof guards
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          CHECKIN=src/wa-send-checkin-v3-proof-testing.js
+          CHECKOUT=src/wa-send-checkout-v3-proof-testing.js
+          PARSER=src/wa-input-parser-v3-proof.js
+
+          grep -Fq 'WA_PRODUCTION_V3_CHECKIN_PROOF_TESTING_V1' "$CHECKIN"
+          grep -Fq "EXPECTED_GROUP_NAME = 'Testing'" "$CHECKIN"
+          grep -Fq "require('./remote-auth-v3')" "$CHECKIN"
+          grep -Fq 'REMOTE_AUTH_VERSION=V3' "$CHECKIN"
+          grep -Fq 'client.sendMessage(' "$CHECKIN"
+          grep -Fq 'SERVER_ACK_CONFIRMED=YES' "$CHECKIN"
+          grep -Fq 'E2E_PROOF_CHECKIN=PASS' "$CHECKIN"
+
+          grep -Fq 'WA_PRODUCTION_V3_E2E_PROOF_TESTING_V1' "$CHECKOUT"
+          grep -Fq "EXPECTED_GROUP_NAME = 'Testing'" "$CHECKOUT"
+          grep -Fq "require('./remote-auth-v3')" "$CHECKOUT"
+          grep -Fq 'REMOTE_AUTH_VERSION=V3' "$CHECKOUT"
+          grep -Fq 'SERVER_ACK_CONFIRMED=YES' "$CHECKOUT"
+          grep -Fq 'E2E_PROOF=PASS' "$CHECKOUT"
+
+          grep -Fq 'P_COLON_RUNTIME_PARSE=PASS' "$PARSER"
+          grep -Fq 'P_IMAGE_RUNTIME_PARSE=PASS' "$PARSER"
+          grep -Fq 'PRODUCTION_ATTENDANCE_DATA_MODIFIED=NO' "$PARSER"
+
+          if grep -Fq 'Aktif Tim Magang OCN' "$CHECKIN" "$CHECKOUT"; then
+            echo "FULL_PROOF_MAIN_GROUP_REFERENCE=YES"
+            exit 50
+          fi
+
+          echo "FULL_PROOF_MAIN_GROUP_REFERENCE=NO"
+          echo "FULL_PROOF_STATIC_GUARD=PASS"
+
+      - name: Run P and P-colon parser proof
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          npm run wa:input-parser-v3-proof | tee input-parser-proof.log
+
+          grep -Fxq 'P_COLON_RUNTIME_PARSE=PASS' input-parser-proof.log
+          grep -Fxq 'P_IMAGE_RUNTIME_PARSE=PASS' input-parser-proof.log
+          grep -Fxq 'P_AND_P_COLON_PROOF=PASS' input-parser-proof.log
+          grep -Fxq 'PRODUCTION_ATTENDANCE_DATA_MODIFIED=NO' input-parser-proof.log
+          grep -Fxq 'WHATSAPP_MESSAGE_SENT=NO' input-parser-proof.log
+
+          echo "INPUT_PARSER_PROOF_CI=PASS"
 
       - name: Safe result
         run: |

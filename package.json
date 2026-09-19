@@ -19,7 +19,9 @@
     "wa:remoteauth-v3-bootstrap": "node src/wa-remote-auth-v3-bootstrap.js",
     "wa:remoteauth-v3-health": "node src/wa-remote-auth-v3-health.js",
     "attendance:sync-once-production-v3": "node src/wa-self-chat-ingest-production-v3.js --sync-once",
-    "wa:send-checkout-v3-proof-testing": "node src/wa-send-checkout-v3-proof-testing.js"
+    "wa:send-checkout-v3-proof-testing": "node src/wa-send-checkout-v3-proof-testing.js",
+    "wa:send-checkin-v3-proof-testing": "node src/wa-send-checkin-v3-proof-testing.js",
+    "wa:input-parser-v3-proof": "node src/wa-input-parser-v3-proof.js"
   },
   "engines": {
     "node": ">=20"
