@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 
 const {
@@ -278,6 +279,458 @@ function messageId(message) {
       'string'
       ? message.id._serialized
       : ''
+  );
+}
+
+async function stableSelfChats(selfIds) {
+  const chats = [];
+  const seen = new Set();
+
+  for (const chatId of selfIds) {
+    if (
+      typeof chatId !== 'string' ||
+      (
+        !chatId.endsWith('@c.us') &&
+        !chatId.endsWith('@lid')
+      )
+    ) {
+      continue;
+    }
+
+    try {
+      const chat =
+        await client.getChatById(
+          chatId
+        );
+
+      const serialized =
+        serializedId(
+          chat &&
+          chat.id
+        );
+
+      if (
+        chat &&
+        serialized &&
+        !seen.has(serialized)
+      ) {
+        seen.add(serialized);
+        chats.push(chat);
+      }
+    } catch (error) {
+      console.log(
+        'LIVE_PROOF_SELF_CHAT_LOOKUP_BEST_EFFORT_FAIL=YES'
+      );
+    }
+  }
+
+  if (chats.length === 0) {
+    throw new Error(
+      'LIVE_PROOF_SELF_CHAT_NOT_FOUND'
+    );
+  }
+
+  return chats;
+}
+
+async function recentSelfMessages(
+  selfIds,
+  limit = 80
+) {
+  const chats =
+    await stableSelfChats(
+      selfIds
+    );
+
+  const output = [];
+  const seen = new Set();
+
+  for (const chat of chats) {
+    let messages = [];
+
+    try {
+      messages =
+        await chat.fetchMessages({
+          limit
+        });
+    } catch (error) {
+      continue;
+    }
+
+    if (!Array.isArray(messages)) {
+      continue;
+    }
+
+    for (const message of messages) {
+      const id =
+        messageId(message);
+
+      if (
+        id &&
+        seen.has(id)
+      ) {
+        continue;
+      }
+
+      if (id) {
+        seen.add(id);
+      }
+
+      if (
+        await isSelfChatMessage(
+          message,
+          selfIds
+        )
+      ) {
+        output.push(message);
+      }
+    }
+  }
+
+  return output;
+}
+
+async function cleanupStaleProjectProofMessages(
+  selfIds
+) {
+  const messages =
+    await recentSelfMessages(
+      selfIds,
+      100
+    );
+
+  const stale =
+    messages.filter(
+      message =>
+        typeof message.body === 'string' &&
+        message.body.includes(
+          PROJECT_PROOF_PREFIX
+        )
+    );
+
+  console.log(
+    \`LIVE_PROOF_STALE_PROJECT_COUNT=\${stale.length}\`
+  );
+
+  for (const message of stale) {
+    try {
+      await message.delete(
+        true,
+        true
+      );
+
+      console.log(
+        'LIVE_PROOF_STALE_PROJECT_REVOKE=PASS'
+      );
+    } catch (error) {
+      console.log(
+        'LIVE_PROOF_STALE_PROJECT_REVOKE=FAIL'
+      );
+
+      throw error;
+    }
+  }
+
+  if (stale.length > 0) {
+    await sleep(2500);
+  }
+
+  const remaining =
+    (
+      await recentSelfMessages(
+        selfIds,
+        100
+      )
+    ).filter(
+      message =>
+        typeof message.body === 'string' &&
+        message.body.includes(
+          PROJECT_PROOF_PREFIX
+        )
+    );
+
+  if (remaining.length !== 0) {
+    throw new Error(
+      'LIVE_PROOF_STALE_PROJECT_REMAINS'
+    );
+  }
+
+  console.log(
+    'LIVE_PROOF_STALE_CLEANUP=PASS'
+  );
+}
+
+async function waitForStableClient() {
+  await sleep(12000);
+
+  let state = null;
+
+  try {
+    state =
+      await client.getState();
+  } catch (error) {
+    console.log(
+      'LIVE_PROOF_CLIENT_STATE_1=ERROR'
+    );
+  }
+
+  console.log(
+    \`LIVE_PROOF_CLIENT_STATE_1=\${state || 'UNKNOWN'}\`
+  );
+
+  if (state === 'CONNECTED') {
+    console.log(
+      'LIVE_PROOF_CLIENT_SETTLED=PASS'
+    );
+
+    return;
+  }
+
+  await sleep(5000);
+
+  state =
+    await client.getState();
+
+  console.log(
+    \`LIVE_PROOF_CLIENT_STATE_2=\${state || 'UNKNOWN'}\`
+  );
+
+  if (state !== 'CONNECTED') {
+    throw new Error(
+      'LIVE_PROOF_CLIENT_NOT_CONNECTED'
+    );
+  }
+
+  console.log(
+    'LIVE_PROOF_CLIENT_SETTLED=PASS'
+  );
+}
+
+async function findProjectProofMessage(
+  selfIds,
+  uniqueProject
+) {
+  const messages =
+    await recentSelfMessages(
+      selfIds,
+      100
+    );
+
+  return (
+    messages.find(
+      message =>
+        parseProject(
+          message.body
+        ) === uniqueProject
+    ) ||
+    null
+  );
+}
+
+function sha256Buffer(buffer) {
+  return crypto
+    .createHash('sha256')
+    .update(buffer)
+    .digest('hex');
+}
+
+async function findProofImageMessage(
+  selfIds,
+  expectedSha256,
+  notBeforeMs
+) {
+  const messages =
+    await recentSelfMessages(
+      selfIds,
+      100
+    );
+
+  for (const message of messages) {
+    if (
+      !isDocumentationImage(
+        message
+      )
+    ) {
+      continue;
+    }
+
+    const ts =
+      Number(
+        message &&
+        message.timestamp
+      );
+
+    if (
+      Number.isFinite(ts) &&
+      ts * 1000 <
+        notBeforeMs - 10000
+    ) {
+      continue;
+    }
+
+    try {
+      const media =
+        await message.downloadMedia();
+
+      if (
+        !media ||
+        typeof media.data !== 'string' ||
+        !media.data
+      ) {
+        continue;
+      }
+
+      const hash =
+        sha256Buffer(
+          Buffer.from(
+            media.data,
+            'base64'
+          )
+        );
+
+      if (hash === expectedSha256) {
+        return message;
+      }
+    } catch (_) {}
+  }
+
+  return null;
+}
+
+async function sendProjectAuditAware(
+  primary,
+  selfIds,
+  projectBody,
+  uniqueProject
+) {
+  for (
+    let attempt = 1;
+    attempt <= 2;
+    attempt += 1
+  ) {
+    console.log(
+      \`LIVE_PROOF_PROJECT_SEND_ATTEMPT=\${attempt}\`
+    );
+
+    try {
+      const sent =
+        await client.sendMessage(
+          primary,
+          projectBody
+        );
+
+      if (sent) {
+        return sent;
+      }
+    } catch (error) {
+      console.log(
+        \`LIVE_PROOF_PROJECT_SEND_ATTEMPT_\${attempt}_ERROR=\${error.message}\`
+      );
+    }
+
+    await sleep(3000);
+
+    const found =
+      await findProjectProofMessage(
+        selfIds,
+        uniqueProject
+      );
+
+    if (found) {
+      console.log(
+        \`LIVE_PROOF_PROJECT_SEND_ATTEMPT_\${attempt}_RECOVERED_FROM_CHAT=YES\`
+      );
+
+      return found;
+    }
+
+    console.log(
+      \`LIVE_PROOF_PROJECT_SEND_ATTEMPT_\${attempt}_DELIVERED=NO\`
+    );
+
+    if (attempt === 1) {
+      console.log(
+        'LIVE_PROOF_PROJECT_AUDIT_GATED_RETRY=YES'
+      );
+
+      await sleep(4000);
+    }
+  }
+
+  throw new Error(
+    'LIVE_PROOF_PROJECT_SEND_FAILED_AFTER_AUDIT'
+  );
+}
+
+async function sendImageAuditAware(
+  primary,
+  selfIds,
+  media,
+  expectedSha256
+) {
+  const startedAtMs =
+    Date.now();
+
+  for (
+    let attempt = 1;
+    attempt <= 2;
+    attempt += 1
+  ) {
+    console.log(
+      \`LIVE_PROOF_IMAGE_SEND_ATTEMPT=\${attempt}\`
+    );
+
+    try {
+      const sent =
+        await client.sendMessage(
+          primary,
+          media,
+          {
+            caption: 'p'
+          }
+        );
+
+      if (sent) {
+        return sent;
+      }
+    } catch (error) {
+      console.log(
+        \`LIVE_PROOF_IMAGE_SEND_ATTEMPT_\${attempt}_ERROR=\${error.message}\`
+      );
+    }
+
+    await sleep(3500);
+
+    const found =
+      await findProofImageMessage(
+        selfIds,
+        expectedSha256,
+        startedAtMs
+      );
+
+    if (found) {
+      console.log(
+        \`LIVE_PROOF_IMAGE_SEND_ATTEMPT_\${attempt}_RECOVERED_FROM_CHAT=YES\`
+      );
+
+      return found;
+    }
+
+    console.log(
+      \`LIVE_PROOF_IMAGE_SEND_ATTEMPT_\${attempt}_DELIVERED=NO\`
+    );
+
+    if (attempt === 1) {
+      console.log(
+        'LIVE_PROOF_IMAGE_AUDIT_GATED_RETRY=YES'
+      );
+
+      await sleep(4000);
+    }
+  }
+
+  throw new Error(
+    'LIVE_PROOF_IMAGE_SEND_FAILED_AFTER_AUDIT'
   );
 }
 
@@ -610,7 +1063,7 @@ async function main() {
   );
 
   console.log(
-    'PROOF MESSAGES WILL BE REVOKED'
+    'PROOF MESSAGES WILL BE REVOKED\nAUDIT-GATED RETRY MAX=1 PER SELF-CHAT PROOF'
   );
 
   console.log(
@@ -700,6 +1153,12 @@ async function main() {
         } =
           await resolveSelfIds();
 
+        await cleanupStaleProjectProofMessages(
+          ids
+        );
+
+        await waitForStableClient();
+
         const nonce =
           Date.now().toString(36);
 
@@ -716,9 +1175,11 @@ async function main() {
         );
 
         const sentProject =
-          await client.sendMessage(
+          await sendProjectAuditAware(
             primary,
-            projectBody
+            ids,
+            projectBody,
+            uniqueProject
           );
 
         proofProjectMessage =
@@ -802,6 +1263,21 @@ async function main() {
           'LIVE_PROOF_IMAGE_SEND_START=YES'
         );
 
+        const proofImageBytes =
+          Buffer.from(
+            PROOF_PNG_BASE64,
+            'base64'
+          );
+
+        const proofImageSha256 =
+          sha256Buffer(
+            proofImageBytes
+          );
+
+        console.log(
+          `LIVE_PROOF_IMAGE_EXPECTED_SHA256=${proofImageSha256}`
+        );
+
         const media =
           new MessageMedia(
             'image/png',
@@ -810,12 +1286,11 @@ async function main() {
           );
 
         const sentImage =
-          await client.sendMessage(
+          await sendImageAuditAware(
             primary,
+            ids,
             media,
-            {
-              caption: 'p'
-            }
+            proofImageSha256
           );
 
         proofImageMessage =
