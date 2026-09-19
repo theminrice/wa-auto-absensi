@@ -1,0 +1,412 @@
+name: WA Production V3 Readiness
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wa-production-v3-readiness
+  cancel-in-progress: false
+
+jobs:
+  production-v3-readiness:
+    name: Production V3 Readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+      ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+      ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Locate Chrome
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CHROME_PATH="$(
+            command -v google-chrome ||
+            command -v google-chrome-stable ||
+            command -v chromium ||
+            command -v chromium-browser ||
+            true
+          )"
+
+          if [ -z "$CHROME_PATH" ]; then
+            echo "CHROME_NOT_FOUND=YES"
+            exit 1
+          fi
+
+          echo "CHROME_PATH=$CHROME_PATH" >> "$GITHUB_ENV"
+          echo "CHROME_FOUND=YES"
+
+      - name: Add temporary Atlas runner IP
+        shell: bash
+        env:
+          ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+          ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+          ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+        run: |
+          set -Eeuo pipefail
+
+          : "${ATLAS_CLIENT_ID:?ATLAS_CLIENT_ID missing}"
+          : "${ATLAS_CLIENT_SECRET:?ATLAS_CLIENT_SECRET missing}"
+          : "${ATLAS_PROJECT_ID:?ATLAS_PROJECT_ID missing}"
+
+          API_ACCEPT="application/vnd.atlas.2025-03-12+json"
+
+          TOKEN_JSON="$(
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --request POST \
+              --url "https://cloud.mongodb.com/api/oauth/token" \
+              --user "${ATLAS_CLIENT_ID}:${ATLAS_CLIENT_SECRET}" \
+              --header "Accept: application/json" \
+              --header "Content-Type: application/x-www-form-urlencoded" \
+              --data "grant_type=client_credentials"
+          )"
+
+          ACCESS_TOKEN="$(
+            printf '%s' "$TOKEN_JSON" |
+              jq -r '.access_token // empty'
+          )"
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ATLAS_OAUTH=FAIL"
+            exit 30
+          fi
+
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "ATLAS_OAUTH=PASS"
+
+          RUNNER_IP="$(
+            curl \
+              -4 \
+              --fail \
+              --silent \
+              --show-error \
+              "https://api.ipify.org"
+          )"
+
+          python3 - "$RUNNER_IP" <<'PY'
+          import ipaddress
+          import sys
+
+          ip = ipaddress.ip_address(sys.argv[1].strip())
+
+          if ip.version != 4:
+              raise SystemExit("Runner public address is not IPv4")
+          PY
+
+          echo "::add-mask::$RUNNER_IP"
+
+          echo "ATLAS_RUNNER_IP=$RUNNER_IP" >> "$GITHUB_ENV"
+          echo "ATLAS_IP_CREATED=0" >> "$GITHUB_ENV"
+
+          BASE_URL="https://cloud.mongodb.com/api/atlas/v2/groups/${ATLAS_PROJECT_ID}/accessList"
+
+          CHECK_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --output atlas-existing.json \
+              --write-out "%{http_code}" \
+              --request GET \
+              --url "${BASE_URL}/${RUNNER_IP}" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: ${API_ACCEPT}"
+          )"
+
+          if [ "$CHECK_CODE" = "200" ]; then
+
+            echo "ATLAS_IP_PREEXISTING=YES"
+
+          elif [ "$CHECK_CODE" = "404" ]; then
+
+            echo "ATLAS_IP_PREEXISTING=NO"
+
+            DELETE_AFTER="$(
+              date -u \
+                -d '+30 minutes' \
+                '+%Y-%m-%dT%H:%M:%SZ'
+            )"
+
+            COMMENT="WA Auto Absensi RemoteAuth ${GITHUB_RUN_ID}"
+
+            PAYLOAD="$(
+              jq -nc \
+                --arg ip "$RUNNER_IP" \
+                --arg comment "$COMMENT" \
+                --arg deleteAfterDate "$DELETE_AFTER" \
+                '[{
+                  ipAddress: $ip,
+                  comment: $comment,
+                  deleteAfterDate: $deleteAfterDate
+                }]'
+            )"
+
+            ADD_CODE="$(
+              curl \
+                --silent \
+                --show-error \
+                --output atlas-add.json \
+                --write-out "%{http_code}" \
+                --request POST \
+                --url "$BASE_URL" \
+                --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+                --header "Accept: ${API_ACCEPT}" \
+                --header "Content-Type: application/json" \
+                --data "$PAYLOAD"
+            )"
+
+            if [ "$ADD_CODE" != "200" ] &&
+               [ "$ADD_CODE" != "201" ]; then
+
+              echo "ATLAS_IP_ADD=FAIL"
+              exit 31
+            fi
+
+            echo "ATLAS_IP_CREATED=1" >> "$GITHUB_ENV"
+
+            echo "ATLAS_IP_ADD=PASS"
+            echo "ATLAS_IP_TEMPORARY_EXPIRY=ENABLED"
+
+          else
+
+            echo "ATLAS_IP_PRECHECK_HTTP=${CHECK_CODE}"
+            echo "ATLAS_IP_PRECHECK=FAIL"
+            exit 32
+          fi
+
+          ACTIVE=0
+
+          for ATTEMPT in $(seq 1 24); do
+
+            STATUS_JSON="$(
+              curl \
+                --fail-with-body \
+                --silent \
+                --show-error \
+                --request GET \
+                --url "${BASE_URL}/${RUNNER_IP}/status" \
+                --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+                --header "Accept: ${API_ACCEPT}"
+            )"
+
+            STATUS="$(
+              printf '%s' "$STATUS_JSON" |
+                jq -r '.STATUS // .status // empty'
+            )"
+
+            echo "ATLAS_IP_STATUS=${STATUS:-UNKNOWN}"
+
+            if [ "$STATUS" = "ACTIVE" ]; then
+              ACTIVE=1
+              break
+            fi
+
+            if [ "$STATUS" = "FAILED" ]; then
+              echo "ATLAS_IP_ACTIVATION=FAIL"
+              exit 33
+            fi
+
+            sleep 5
+          done
+
+          if [ "$ACTIVE" != "1" ]; then
+            echo "ATLAS_IP_ACTIVATION=TIMEOUT"
+            exit 34
+          fi
+
+          rm -f atlas-existing.json atlas-add.json
+
+          echo "ATLAS_IP_ACTIVATION=PASS"
+          echo "ATLAS_DYNAMIC_IP_READY=YES"
+      - name: Verify Production V3 source isolation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          for source in \
+            src/wa-send-checkin-production.js \
+            src/wa-send-checkout-production.js \
+            src/wa-self-chat-ingest-production-v3.js
+          do
+            grep -Fq "require('./remote-auth-v3')" "$source"
+            grep -Fq 'REMOTE_AUTH_VERSION=V3' "$source"
+          done
+
+          grep -Fq \
+            "EXPECTED_GROUP_NAME = 'Aktif Tim Magang OCN'" \
+            src/wa-send-checkin-production.js
+
+          grep -Fq \
+            "EXPECTED_GROUP_NAME = 'Aktif Tim Magang OCN'" \
+            src/wa-send-checkout-production.js
+
+          if grep -Fq "EXPECTED_GROUP_NAME = 'Testing'" \
+            src/wa-send-checkin-production.js \
+            src/wa-send-checkout-production.js
+          then
+            echo "PRODUCTION_TESTING_REFERENCE=YES"
+            exit 30
+          fi
+
+          if grep -Fq 'sendMessage(' \
+            src/wa-self-chat-ingest-production-v3.js
+          then
+            echo "PRODUCTION_SYNC_SEND_CALL=YES"
+            exit 31
+          fi
+
+          echo "PRODUCTION_TESTING_REFERENCE=NO"
+          echo "PRODUCTION_SYNC_SEND_CALL=NO"
+          echo "PRODUCTION_V3_SOURCE_ISOLATION=PASS"
+
+      - name: Verify Production V3 sync readiness
+        shell: bash
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-production-v3-readiness
+          TZ: Asia/Jakarta
+        run: |
+          set -Eeuo pipefail
+
+          mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
+
+          echo "PRODUCTION_V3_READINESS_START=YES"
+          echo "NO_WHATSAPP_MESSAGE_WILL_BE_SENT=YES"
+
+          rm -f production-v3-readiness.log
+
+          npm run attendance:sync-once-production-v3 \
+            2>&1 |
+            tee production-v3-readiness.log
+
+          grep -Fxq 'AUTH_MODE=REMOTE' production-v3-readiness.log
+          grep -Fxq 'REMOTE_AUTH_VERSION=V3' production-v3-readiness.log
+          grep -Fxq 'REMOTE_V3_ACTIVE_RESTORE=PASS' production-v3-readiness.log
+          grep -Fxq 'WHATSAPP_READY=YES' production-v3-readiness.log
+          grep -Fxq 'SELF_CHAT_CATCHUP_STABLE=YES' production-v3-readiness.log
+          grep -Fxq 'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS' production-v3-readiness.log
+          grep -Fxq 'ATTENDANCE_SYNC_ONCE=PASS' production-v3-readiness.log
+
+          if grep -Fxq 'REMOTE_AUTH_QR_FORBIDDEN=YES' production-v3-readiness.log
+          then
+            echo "PRODUCTION_V3_QR_REQUIRED=YES"
+            exit 32
+          fi
+
+          echo "PRODUCTION_V3_QR_REQUIRED=NO"
+          echo "PRODUCTION_V3_SYNC_READINESS=PASS"
+          echo "MESSAGE_SENT=NO"
+
+      - name: Remove temporary Atlas runner IP
+        if: always()
+        shell: bash
+        env:
+          ATLAS_CLIENT_ID: ${{ secrets.ATLAS_CLIENT_ID }}
+          ATLAS_CLIENT_SECRET: ${{ secrets.ATLAS_CLIENT_SECRET }}
+          ATLAS_PROJECT_ID: ${{ secrets.ATLAS_PROJECT_ID }}
+          ATLAS_RUNNER_IP: ${{ env.ATLAS_RUNNER_IP }}
+          ATLAS_IP_CREATED: ${{ env.ATLAS_IP_CREATED }}
+        run: |
+          set -Eeuo pipefail
+
+          if [ -z "${ATLAS_RUNNER_IP:-}" ]; then
+            echo "ATLAS_IP_CLEANUP=SKIPPED_NO_RUNNER_IP"
+            exit 0
+          fi
+
+          if [ "${ATLAS_IP_CREATED:-0}" != "1" ]; then
+            echo "ATLAS_IP_CLEANUP=SKIPPED_PREEXISTING"
+            exit 0
+          fi
+
+          API_ACCEPT="application/vnd.atlas.2025-03-12+json"
+
+          TOKEN_JSON="$(
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --request POST \
+              --url "https://cloud.mongodb.com/api/oauth/token" \
+              --user "${ATLAS_CLIENT_ID}:${ATLAS_CLIENT_SECRET}" \
+              --header "Accept: application/json" \
+              --header "Content-Type: application/x-www-form-urlencoded" \
+              --data "grant_type=client_credentials"
+          )"
+
+          ACCESS_TOKEN="$(
+            printf '%s' "$TOKEN_JSON" |
+              jq -r '.access_token // empty'
+          )"
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ATLAS_CLEANUP_OAUTH=FAIL"
+            exit 40
+          fi
+
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "::add-mask::$ATLAS_RUNNER_IP"
+
+          BASE_URL="https://cloud.mongodb.com/api/atlas/v2/groups/${ATLAS_PROJECT_ID}/accessList"
+
+          DELETE_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --request DELETE \
+              --url "${BASE_URL}/${ATLAS_RUNNER_IP}" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: ${API_ACCEPT}"
+          )"
+
+          if [ "$DELETE_CODE" != "204" ] &&
+             [ "$DELETE_CODE" != "404" ]; then
+
+            echo "ATLAS_IP_CLEANUP=FAIL"
+            echo "ATLAS_IP_CLEANUP_HTTP=${DELETE_CODE}"
+            exit 41
+          fi
+
+          VERIFY_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --request GET \
+              --url "${BASE_URL}/${ATLAS_RUNNER_IP}" \
+              --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+              --header "Accept: ${API_ACCEPT}"
+          )"
+
+          if [ "$VERIFY_CODE" != "404" ]; then
+            echo "ATLAS_IP_CLEANUP_VERIFY=FAIL"
+            exit 42
+          fi
+
+          echo "ATLAS_IP_CLEANUP=PASS"
+          echo "ATLAS_IP_CLEANUP_VERIFY=PASS"
