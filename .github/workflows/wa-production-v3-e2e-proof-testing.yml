@@ -321,7 +321,7 @@ jobs:
           grep -Fxq 'REMOTE_AUTH_VERSION=V3' v3-proof-sync.log
           grep -Fxq 'REMOTE_V3_ACTIVE_RESTORE=PASS' v3-proof-sync.log
           grep -Fxq 'WHATSAPP_READY=YES' v3-proof-sync.log
-          grep -Fxq 'SELF_CHAT_CATCHUP_STABLE=YES' v3-proof-sync.log
+          grep -Fxq 'PALELU_CATCHUP_STABLE=YES' v3-proof-sync.log
           grep -Fxq 'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS' v3-proof-sync.log
           grep -Fxq 'ATTENDANCE_SYNC_ONCE=PASS' v3-proof-sync.log
 
