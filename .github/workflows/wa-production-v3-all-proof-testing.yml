@@ -1,10 +1,10 @@
-name: WA Production V3 Full Proof - Testing
+name: WA One Session Candidate Full Proof - Testing
 
 on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: Type Testing-V3-All-Proof to authorize two real sends to Testing
+        description: Type Testing-One-Session-V1 to authorize exactly two real sends to Testing on candidate branch
         required: true
         type: string
 
@@ -12,12 +12,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: wa-production-v3-all-proof-testing
+  group: wa-attendance-production-cloud
   cancel-in-progress: false
 
 jobs:
   production-v3-all-proof-testing:
-    name: Production V3 Full Proof - Testing
+    name: One Session Candidate - Testing Only
+    if: github.ref == 'refs/heads/feat/palelu-one-session-candidate-v1'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -252,7 +253,7 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          if [ "$PROOF_CONFIRM" != "Testing-V3-All-Proof" ]; then
+          if [ "$PROOF_CONFIRM" != "Testing-One-Session-V1" ]; then
             echo "FULL_PROOF_CONFIRMATION=FAIL"
             exit 30
           fi
@@ -331,43 +332,33 @@ jobs:
 
           echo "FULL_PROOF_INPUT_PARSER=PASS"
 
-      - name: Sync latest inputs with Production V3
+      # WA_AUTO_ABSENSI_ONE_SESSION_PROOF_TESTING_V1
+      # No standalone sync: Palelu is read on the same Client inside
+      # each Testing-only sender after its own RemoteAuth V3 restore.
+      - name: Verify candidate single-session path is isolated
         shell: bash
-        env:
-          MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-v3-proof-testing
-          TZ: Asia/Jakarta
         run: |
           set -Eeuo pipefail
 
-          mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
+          test "${GITHUB_REF}" = "refs/heads/feat/palelu-one-session-candidate-v1"
+          test "${GITHUB_SHA}" = "$(git rev-parse HEAD)"
 
-          echo "E2E_PROOF_SYNC_START=YES"
-          echo "E2E_PROOF_SYNC_SEND=NO"
+          for sender in \
+            src/wa-send-checkin-v3-proof-testing.js \
+            src/wa-send-checkout-v3-proof-testing.js
+          do
+            grep -Fq "EXPECTED_GROUP_NAME = 'Testing'" "$sender"
+            grep -Fq 'WA_AUTO_ABSENSI_ONE_SESSION_PROOF_TESTING_V1' "$sender"
+            grep -Fq 'await syncPaleluWithClient(client);' "$sender"
+          done
 
-          rm -f v3-proof-sync.log
-
-          npm run attendance:sync-once-production-v3 \
-            2>&1 |
-            tee v3-proof-sync.log
-
-          grep -Fxq 'AUTH_MODE=REMOTE' v3-proof-sync.log
-          grep -Fxq 'REMOTE_AUTH_VERSION=V3' v3-proof-sync.log
-          grep -Fxq 'REMOTE_V3_ACTIVE_RESTORE=PASS' v3-proof-sync.log
-          grep -Fxq 'WHATSAPP_READY=YES' v3-proof-sync.log
-          grep -Fxq 'PALELU_CATCHUP_STABLE=YES' v3-proof-sync.log
-          grep -Fxq 'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS' v3-proof-sync.log
-          grep -Fxq 'ATTENDANCE_SYNC_ONCE=PASS' v3-proof-sync.log
-
-          if grep -Fxq 'REMOTE_AUTH_QR_FORBIDDEN=YES' v3-proof-sync.log
-          then
-            echo "E2E_PROOF_SYNC_QR_REQUIRED=YES"
-            exit 32
+          if grep -Fq 'sendMessage(' src/wa-self-chat-ingest-production-v3.js; then
+            echo 'ONE_SESSION_INPUT_SEND_CALL=YES'
+            exit 45
           fi
 
-          echo "E2E_PROOF_SYNC_QR_REQUIRED=NO"
-          echo "E2E_PROOF_SYNC=PASS"
-          echo "E2E_PROOF_SYNC_MESSAGE_SENT=NO"
+          echo 'ONE_SESSION_STANDALONE_SYNC=NO'
+          echo 'ONE_SESSION_SOURCE_ISOLATION=PASS'
 
       - name: Send one V3 check-in proof to Testing
         shell: bash
@@ -375,6 +366,7 @@ jobs:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-v3-proof-testing
           TZ: Asia/Jakarta
+          ATTENDANCE_ONE_SESSION_CANDIDATE: 'YES'
         run: |
           set -Eeuo pipefail
 
@@ -399,6 +391,11 @@ jobs:
 
           test -f v3-checkin-proof.log
 
+          grep -Fxq 'ONE_SESSION_TESTING_CANDIDATE=ENABLED' v3-checkin-proof.log
+          grep -Fxq 'ONE_SESSION_PALELU_SYNC=PASS' v3-checkin-proof.log
+          grep -Fxq 'ONE_SESSION_TESTING_CLIENT_REUSED=YES' v3-checkin-proof.log
+          grep -Fxq 'PALELU_CATCHUP_STABLE=YES' v3-checkin-proof.log
+          grep -Fxq 'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS' v3-checkin-proof.log
           grep -Fxq 'E2E_PROOF_MODE=TESTING_V3_CHECKIN_PROOF' v3-checkin-proof.log
           grep -Fxq 'E2E_PROOF_CHECKIN_SEND_MAX=1' v3-checkin-proof.log
           grep -Fxq 'E2E_PROOF_AUTOMATIC_RETRY=NO' v3-checkin-proof.log
@@ -448,6 +445,7 @@ jobs:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-v3-proof-testing
           TZ: Asia/Jakarta
+          ATTENDANCE_ONE_SESSION_CANDIDATE: 'YES'
         run: |
           set -Eeuo pipefail
 
@@ -472,6 +470,11 @@ jobs:
 
           test -f v3-e2e-proof.log
 
+          grep -Fxq 'ONE_SESSION_TESTING_CANDIDATE=ENABLED' v3-e2e-proof.log
+          grep -Fxq 'ONE_SESSION_PALELU_SYNC=PASS' v3-e2e-proof.log
+          grep -Fxq 'ONE_SESSION_TESTING_CLIENT_REUSED=YES' v3-e2e-proof.log
+          grep -Fxq 'PALELU_CATCHUP_STABLE=YES' v3-e2e-proof.log
+          grep -Fxq 'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS' v3-e2e-proof.log
           grep -Fxq 'E2E_PROOF_MODE=TESTING_V3_CHECKOUT_PROOF' v3-e2e-proof.log
           grep -Fxq 'E2E_PROOF_ONE_REAL_SEND_MAX=YES' v3-e2e-proof.log
           grep -Fxq 'E2E_PROOF_AUTOMATIC_RETRY=NO' v3-e2e-proof.log
@@ -523,17 +526,25 @@ jobs:
           set -Eeuo pipefail
 
           test -f v3-input-parser-proof.log
-          test -f v3-proof-sync.log
+          test ! -e v3-proof-sync.log
           test -f v3-checkin-proof.log
           test -f v3-e2e-proof.log
 
           grep -Fxq 'P_AND_P_COLON_PROOF=PASS' v3-input-parser-proof.log
 
-          grep -Fxq 'REMOTE_AUTH_VERSION=V3' v3-proof-sync.log
-          grep -Fxq 'REMOTE_V3_ACTIVE_RESTORE=PASS' v3-proof-sync.log
-          grep -Fxq 'PALELU_CATCHUP_STABLE=YES' v3-proof-sync.log
-          grep -Fxq 'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS' v3-proof-sync.log
-          grep -Fxq 'ATTENDANCE_SYNC_ONCE=PASS' v3-proof-sync.log
+          grep -Fxq 'REMOTE_AUTH_VERSION=V3' v3-checkin-proof.log
+          grep -Fxq 'REMOTE_AUTH_VERSION=V3' v3-e2e-proof.log
+          grep -Fxq 'PALELU_CATCHUP_STABLE=YES' v3-checkin-proof.log
+          grep -Fxq 'PALELU_CATCHUP_STABLE=YES' v3-e2e-proof.log
+          grep -Fxq 'ONE_SESSION_TESTING_CLIENT_REUSED=YES' v3-checkin-proof.log
+          grep -Fxq 'ONE_SESSION_TESTING_CLIENT_REUSED=YES' v3-e2e-proof.log
+
+          # Exactly one startup/restore and one Palelu sync per sender;
+          # no additional sync process between them.
+          test "$(grep -Fxc 'REMOTE_V3_ACTIVE_RESTORE=PASS' v3-checkin-proof.log)" = 1
+          test "$(grep -Fxc 'REMOTE_V3_ACTIVE_RESTORE=PASS' v3-e2e-proof.log)" = 1
+          test "$(grep -Fxc 'ONE_SESSION_PALELU_SYNC=PASS' v3-checkin-proof.log)" = 1
+          test "$(grep -Fxc 'ONE_SESSION_PALELU_SYNC=PASS' v3-e2e-proof.log)" = 1
 
           grep -Fxq 'E2E_PROOF_CHECKIN=PASS' v3-checkin-proof.log
           grep -Fxq 'E2E_PROOF=PASS' v3-e2e-proof.log
@@ -568,6 +579,10 @@ jobs:
 
           echo "FULL_PROOF_P_COLON=PASS"
           echo "FULL_PROOF_P_IMAGE=PASS"
+          echo "ONE_SESSION_STANDALONE_SYNC=NO"
+          echo "ONE_SESSION_RESTORES_TOTAL=2"
+          echo "ONE_SESSION_PALELU_SYNCS_TOTAL=2"
+          echo "ONE_SESSION_TESTING_FINAL=PASS"
           echo "FULL_PROOF_SYNC=PASS"
           echo "FULL_PROOF_CHECKIN=PASS"
           echo "FULL_PROOF_CHECKOUT=PASS"
@@ -675,6 +690,6 @@ jobs:
           set -Eeuo pipefail
 
           rm -rf "${RUNNER_TEMP}/wa-auto-absensi-v3-proof-testing"
-          rm -f v3-input-parser-proof.log v3-proof-sync.log v3-checkin-proof.log v3-e2e-proof.log
+          rm -f v3-input-parser-proof.log v3-checkin-proof.log v3-e2e-proof.log
 
           echo "E2E_PROOF_LOCAL_STATE_REMOVED=YES"
