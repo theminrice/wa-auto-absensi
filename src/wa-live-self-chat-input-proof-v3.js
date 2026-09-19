@@ -32,6 +32,11 @@ let client = null;
 let finished = false;
 let readyStarted = false;
 
+let proofProjectMessage = null;
+let proofImageMessage = null;
+let proofChat = null;
+let proofUniqueProject = '';
+
 function sleep(ms) {
   return new Promise(
     resolve => setTimeout(resolve, ms)
@@ -460,6 +465,82 @@ async function deleteProofMessage(
   }
 }
 
+async function cleanupOutstandingProofMessages() {
+  let attempted = false;
+
+  for (const item of [
+    ['IMAGE', proofImageMessage],
+    ['PROJECT', proofProjectMessage]
+  ]) {
+    const label = item[0];
+    const message = item[1];
+
+    if (!message) {
+      continue;
+    }
+
+    attempted = true;
+
+    try {
+      await message.delete(
+        true,
+        true
+      );
+
+      console.log(
+        `LIVE_PROOF_FAILSAFE_${label}_REVOKE=PASS`
+      );
+    } catch (error) {
+      console.log(
+        `LIVE_PROOF_FAILSAFE_${label}_REVOKE=FAIL`
+      );
+
+      console.log(
+        `LIVE_PROOF_FAILSAFE_${label}_REVOKE_ERROR=${error.message}`
+      );
+    }
+  }
+
+  if (
+    attempted &&
+    proofChat &&
+    proofUniqueProject
+  ) {
+    try {
+      const projectId =
+        messageId(
+          proofProjectMessage
+        );
+
+      const imageId =
+        messageId(
+          proofImageMessage
+        );
+
+      const clean =
+        await waitUntilProofIsNotParseable(
+          proofChat,
+          projectId,
+          imageId,
+          proofUniqueProject
+        );
+
+      console.log(
+        `LIVE_PROOF_FAILSAFE_REVOKE_VISIBILITY=${clean ? 'PASS' : 'FAIL'}`
+      );
+    } catch (error) {
+      console.log(
+        'LIVE_PROOF_FAILSAFE_REVOKE_VISIBILITY=FAIL'
+      );
+
+      console.log(
+        'LIVE_PROOF_FAILSAFE_REVOKE_VISIBILITY_ERROR=' +
+        error.message
+      );
+    }
+  }
+}
+
 async function finish(code) {
   if (finished) {
     return;
@@ -640,6 +721,12 @@ async function main() {
             projectBody
           );
 
+        proofProjectMessage =
+          sentProject;
+
+        proofUniqueProject =
+          uniqueProject;
+
         if (!sentProject) {
           throw new Error(
             'LIVE_PROOF_PROJECT_SEND_EMPTY'
@@ -662,6 +749,9 @@ async function main() {
 
         const projectChat =
           await sentProject.getChat();
+
+        proofChat =
+          projectChat;
 
         const projectReloaded =
           await refreshMessage(
@@ -727,6 +817,9 @@ async function main() {
               caption: 'p'
             }
           );
+
+        proofImageMessage =
+          sentImage;
 
         if (!sentImage) {
           throw new Error(
@@ -872,6 +965,9 @@ async function main() {
           'LIVE_PROOF_SELF_CHAT_CLEANUP=PASS'
         );
 
+        proofProjectMessage = null;
+        proofImageMessage = null;
+
         console.log(
           'LIVE_PROOF_ATTENDANCE_CANONICAL_DB_WRITE=NO'
         );
@@ -902,6 +998,8 @@ async function main() {
         console.log(
           'LIVE_PROOF_GROUP_MESSAGE_SENT=NO'
         );
+
+        await cleanupOutstandingProofMessages();
 
         await finish(30);
       }
