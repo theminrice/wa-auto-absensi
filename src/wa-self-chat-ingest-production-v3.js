@@ -22,8 +22,13 @@ const {
   STORAGE_VERSION,
   ensureAttendanceIndexes,
   saveProject,
-  saveDocumentation
+  saveDocumentation,
+  saveLeave
 } = require('./attendance-input-store');
+
+const {
+  parseLeaveCommand
+} = require('./attendance-leave');
 
 let client = null;
 let shuttingDown = false;
@@ -519,6 +524,46 @@ async function ingestProject(
   );
 }
 
+async function ingestLeave(
+  message,
+  leave,
+  messageId
+) {
+  const createdAt =
+    messageTimestamp(message);
+
+  const saved =
+    await saveLeave(
+      mongoose.connection,
+      leave,
+      createdAt
+    );
+
+  await markPersisted(
+    saved._id,
+    messageId
+  );
+
+  console.log(
+    'SELF_CHAT_LEAVE_CAPTURED=YES'
+  );
+
+  console.log(
+    'LEAVE_START_DATE=' +
+    saved.startDate
+  );
+
+  console.log(
+    'LEAVE_END_DATE=' +
+    saved.endDate
+  );
+
+  console.log(
+    'LEAVE_TIMESTAMP=' +
+    saved.createdAt.toISOString()
+  );
+}
+
 async function ingestDocumentation(
   message,
   messageId
@@ -626,11 +671,18 @@ async function handleMessage(message) {
   const project =
     parseProject(message.body);
 
+  const leave =
+    parseLeaveCommand(
+      message.body,
+      messageTimestamp(message)
+    );
+
   const documentation =
     isDocumentationImage(message);
 
   if (
     !project &&
+    !leave &&
     !documentation
   ) {
     return;
@@ -642,7 +694,9 @@ async function handleMessage(message) {
   const kind =
     project
       ? 'project'
-      : 'documentation';
+      : leave
+        ? 'leave'
+        : 'documentation';
 
   const current =
     await getCurrentCanonical(
@@ -709,6 +763,16 @@ async function handleMessage(message) {
     await ingestProject(
       message,
       project,
+      messageId
+    );
+
+    return;
+  }
+
+  if (leave) {
+    await ingestLeave(
+      message,
+      leave,
       messageId
     );
 
@@ -846,6 +910,12 @@ async function startupCatchupSelfChat() {
           message.body
         );
 
+      const leave =
+        parseLeaveCommand(
+          message.body,
+          messageTimestamp(message)
+        );
+
       const documentation =
         isDocumentationImage(
           message
@@ -853,6 +923,7 @@ async function startupCatchupSelfChat() {
 
       if (
         !project &&
+        !leave &&
         !documentation
       ) {
         continue;
