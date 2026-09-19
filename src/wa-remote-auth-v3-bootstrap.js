@@ -88,7 +88,7 @@ async function waitForVerifiedActive(
     attempt += 1
   ) {
     console.log(
-      \`REMOTE_V3_ACTIVE_VERIFY_ATTEMPT=\${attempt}\`
+      `REMOTE_V3_ACTIVE_VERIFY_ATTEMPT=${attempt}`
     );
 
     try {
@@ -103,7 +103,7 @@ async function waitForVerifiedActive(
       lastError = error;
 
       console.log(
-        \`REMOTE_V3_ACTIVE_VERIFY_WAIT_ERROR=\${error.message}\`
+        `REMOTE_V3_ACTIVE_VERIFY_WAIT_ERROR=${error.message}`
       );
     }
 
@@ -187,11 +187,11 @@ async function main() {
     });
 
   console.log(
-    \`REMOTE_V3_SESSION_EXISTS_BEFORE=\${activeBefore ? 'YES' : 'NO'}\`
+    `REMOTE_V3_SESSION_EXISTS_BEFORE=${activeBefore ? 'YES' : 'NO'}`
   );
 
   console.log(
-    \`REMOTE_V3_LAST_GOOD_EXISTS_BEFORE=\${lastGoodBefore ? 'YES' : 'NO'}\`
+    `REMOTE_V3_LAST_GOOD_EXISTS_BEFORE=${lastGoodBefore ? 'YES' : 'NO'}`
   );
 
   client =
@@ -252,7 +252,7 @@ async function main() {
       );
 
       console.log(
-        \`REMOTE_V3_AUTH_FAILURE_MESSAGE=\${message}\`
+        `REMOTE_V3_AUTH_FAILURE_MESSAGE=${message}`
       );
 
       await safeFinish(20);
@@ -293,7 +293,7 @@ async function main() {
         );
 
         console.log(
-          \`REMOTE_V3_SESSION_SAVED_EVENT_SEEN=\${savedEventSeen ? 'YES' : 'NO'}\`
+          `REMOTE_V3_SESSION_SAVED_EVENT_SEEN=${savedEventSeen ? 'YES' : 'NO'}`
         );
 
         console.log(
@@ -311,7 +311,7 @@ async function main() {
         );
 
         console.log(
-          \`REMOTE_V3_BOOTSTRAP_VERIFY_ERROR=\${error.message}\`
+          `REMOTE_V3_BOOTSTRAP_VERIFY_ERROR=${error.message}`
         );
 
         console.log(
@@ -358,7 +358,7 @@ main()
       );
 
       console.log(
-        \`REMOTE_V3_BOOTSTRAP_ERROR_MESSAGE=\${error.message}\`
+        `REMOTE_V3_BOOTSTRAP_ERROR_MESSAGE=${error.message}`
       );
 
       console.log(

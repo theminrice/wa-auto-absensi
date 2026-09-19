@@ -20,13 +20,13 @@ const REMOTE_AUTH_V3_CLIENT_ID =
   'wa-auto-absensi-remote-v3';
 
 const REMOTE_AUTH_V3_ACTIVE_SESSION =
-  \`RemoteAuth-\${REMOTE_AUTH_V3_CLIENT_ID}\`;
+  `RemoteAuth-${REMOTE_AUTH_V3_CLIENT_ID}`;
 
 const REMOTE_AUTH_V3_CANDIDATE_SESSION =
-  \`\${REMOTE_AUTH_V3_ACTIVE_SESSION}-candidate\`;
+  `${REMOTE_AUTH_V3_ACTIVE_SESSION}-candidate`;
 
 const REMOTE_AUTH_V3_LAST_GOOD_SESSION =
-  \`\${REMOTE_AUTH_V3_ACTIVE_SESSION}-last-good\`;
+  `${REMOTE_AUTH_V3_ACTIVE_SESSION}-last-good`;
 
 const REMOTE_AUTH_V3_BACKUP_MS = 60000;
 
@@ -53,7 +53,7 @@ async function validateZipFile(
 ) {
   if (!fs.existsSync(zipPath)) {
     throw new Error(
-      \`REMOTE_V3_ZIP_MISSING_\${safeLabel(label)}\`
+      `REMOTE_V3_ZIP_MISSING_${safeLabel(label)}`
     );
   }
 
@@ -62,7 +62,7 @@ async function validateZipFile(
 
   if (size < 1000) {
     throw new Error(
-      \`REMOTE_V3_ZIP_TOO_SMALL_\${safeLabel(label)}_\${size}\`
+      `REMOTE_V3_ZIP_TOO_SMALL_${safeLabel(label)}_${size}`
     );
   }
 
@@ -77,7 +77,7 @@ async function validateZipFile(
     directory.files.length === 0
   ) {
     throw new Error(
-      \`REMOTE_V3_ZIP_EMPTY_\${safeLabel(label)}\`
+      `REMOTE_V3_ZIP_EMPTY_${safeLabel(label)}`
     );
   }
 
@@ -97,7 +97,7 @@ async function validateZipFile(
 
   if (inflatedBytes === 0) {
     throw new Error(
-      \`REMOTE_V3_ZIP_NO_FILE_BYTES_\${safeLabel(label)}\`
+      `REMOTE_V3_ZIP_NO_FILE_BYTES_${safeLabel(label)}`
     );
   }
 
@@ -105,23 +105,23 @@ async function validateZipFile(
     sha256File(zipPath);
 
   console.log(
-    \`REMOTE_V3_ZIP_VALIDATION=\${safeLabel(label)}:PASS\`
+    `REMOTE_V3_ZIP_VALIDATION=${safeLabel(label)}:PASS`
   );
 
   console.log(
-    \`REMOTE_V3_ZIP_SIZE_\${safeLabel(label)}=\${size}\`
+    `REMOTE_V3_ZIP_SIZE_${safeLabel(label)}=${size}`
   );
 
   console.log(
-    \`REMOTE_V3_ZIP_ENTRIES_\${safeLabel(label)}=\${directory.files.length}\`
+    `REMOTE_V3_ZIP_ENTRIES_${safeLabel(label)}=${directory.files.length}`
   );
 
   console.log(
-    \`REMOTE_V3_ZIP_INFLATED_BYTES_\${safeLabel(label)}=\${inflatedBytes}\`
+    `REMOTE_V3_ZIP_INFLATED_BYTES_${safeLabel(label)}=${inflatedBytes}`
   );
 
   console.log(
-    \`REMOTE_V3_ZIP_SHA256_\${safeLabel(label)}=\${sha256}\`
+    `REMOTE_V3_ZIP_SHA256_${safeLabel(label)}=${sha256}`
   );
 
   return {
@@ -139,7 +139,7 @@ function sessionZipPath(
 ) {
   return path.resolve(
     dataPath,
-    \`\${session}.zip\`
+    `${session}.zip`
   );
 }
 
@@ -161,7 +161,7 @@ async function createTempZipPath(
     await fs.promises.mkdtemp(
       path.join(
         os.tmpdir(),
-        \`\${safeLabel(prefix)}-\`
+        `${safeLabel(prefix)}-`
       )
     );
 
@@ -236,7 +236,7 @@ function createHardenedRemoteAuthV3Store(
   ) {
     const temp =
       await createTempZipPath(
-        \`remote-v3-verify-\${label}\`
+        `remote-v3-verify-${label}`
       );
 
     try {
@@ -271,7 +271,7 @@ function createHardenedRemoteAuthV3Store(
   ) {
     await validateZipFile(
       sourceZip,
-      \`\${label}_SOURCE\`
+      `${label}_SOURCE`
     );
 
     const targetLocalZip =
@@ -306,11 +306,11 @@ function createHardenedRemoteAuthV3Store(
     const verified =
       await verifyStoredSnapshot(
         targetSession,
-        \`\${label}_ROUNDTRIP\`
+        `${label}_ROUNDTRIP`
       );
 
     console.log(
-      \`REMOTE_V3_STORE_SAVE_\${safeLabel(label)}=PASS\`
+      `REMOTE_V3_STORE_SAVE_${safeLabel(label)}=PASS`
     );
 
     return verified;
@@ -361,7 +361,7 @@ function createHardenedRemoteAuthV3Store(
       );
 
       console.log(
-        \`REMOTE_V3_LAST_GOOD_REFRESH_ERROR=\${error.message}\`
+        `REMOTE_V3_LAST_GOOD_REFRESH_ERROR=${error.message}`
       );
 
       return false;
@@ -419,7 +419,7 @@ function createHardenedRemoteAuthV3Store(
       );
 
       console.log(
-        \`REMOTE_V3_ACTIVE_ROLLBACK_ERROR=\${error.message}\`
+        `REMOTE_V3_ACTIVE_ROLLBACK_ERROR=${error.message}`
       );
 
       return false;
@@ -495,7 +495,7 @@ function createHardenedRemoteAuthV3Store(
         );
 
         console.log(
-          \`REMOTE_V3_ACTIVE_PROMOTION_ERROR=\${promotionError.message}\`
+          `REMOTE_V3_ACTIVE_PROMOTION_ERROR=${promotionError.message}`
         );
 
         const rolledBack =
@@ -503,7 +503,7 @@ function createHardenedRemoteAuthV3Store(
 
         if (!rolledBack) {
           throw new Error(
-            \`REMOTE_V3_PROMOTION_AND_ROLLBACK_FAILED_\${promotionError.message}\`
+            `REMOTE_V3_PROMOTION_AND_ROLLBACK_FAILED_${promotionError.message}`
           );
         }
 
@@ -531,7 +531,7 @@ function createHardenedRemoteAuthV3Store(
         );
 
         console.log(
-          \`REMOTE_V3_CANDIDATE_CLEANUP_ERROR=\${error.message}\`
+          `REMOTE_V3_CANDIDATE_CLEANUP_ERROR=${error.message}`
         );
       }
 
@@ -614,7 +614,7 @@ function createHardenedRemoteAuthV3Store(
         );
 
         console.log(
-          \`REMOTE_V3_ACTIVE_RESTORE_ERROR=\${activeError.message}\`
+          `REMOTE_V3_ACTIVE_RESTORE_ERROR=${activeError.message}`
         );
 
         await rmFile(
@@ -678,7 +678,7 @@ function createHardenedRemoteAuthV3Store(
         );
 
         console.log(
-          \`REMOTE_V3_ACTIVE_SELF_HEAL_ERROR=\${error.message}\`
+          `REMOTE_V3_ACTIVE_SELF_HEAL_ERROR=${error.message}`
         );
       }
     };
@@ -753,7 +753,7 @@ function createHardenedRemoteAuthV3Store(
           }
         } catch (error) {
           console.log(
-            \`REMOTE_V3_DELETE_BEST_EFFORT_FAIL_\${safeLabel(session)}=\${error.message}\`
+            `REMOTE_V3_DELETE_BEST_EFFORT_FAIL_${safeLabel(session)}=${error.message}`
           );
         }
       }
@@ -772,11 +772,11 @@ function createHardenedRemoteAuthV3Store(
         );
 
       console.log(
-        \`REMOTE_V3_ACTIVE_EXISTS=\${activeExists ? 'YES' : 'NO'}\`
+        `REMOTE_V3_ACTIVE_EXISTS=${activeExists ? 'YES' : 'NO'}`
       );
 
       console.log(
-        \`REMOTE_V3_LAST_GOOD_EXISTS=\${lastGoodExists ? 'YES' : 'NO'}\`
+        `REMOTE_V3_LAST_GOOD_EXISTS=${lastGoodExists ? 'YES' : 'NO'}`
       );
 
       if (!activeExists) {
