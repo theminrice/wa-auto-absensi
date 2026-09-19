@@ -33,6 +33,8 @@ const E2E_PROOF_MODE = 'TESTING_V3_CHECKIN_PROOF';
 const useRemoteAuth =
   Boolean(process.env.MONGODB_URI);
 
+let remoteV3Store = null;
+
 function timeout(promise, ms, label) {
   let timer;
 
@@ -58,9 +60,55 @@ function maskGroupId(id) {
 }
 
 async function finish(client, code) {
-  try {
-    await client.destroy();
-  } catch (_) {}
+  let drainOk = true;
+
+  if (
+    useRemoteAuth &&
+    remoteV3Store &&
+    typeof remoteV3Store.beginShutdownAndDrain ===
+      'function'
+  ) {
+    try {
+      await timeout(
+        remoteV3Store.beginShutdownAndDrain(),
+        120000,
+        'REMOTE_V3_SHUTDOWN_DRAIN'
+      );
+
+      console.log(
+        'REMOTE_V3_SHUTDOWN_DRAIN=PASS'
+      );
+    } catch (error) {
+      drainOk = false;
+
+      console.log(
+        'REMOTE_V3_SHUTDOWN_DRAIN=FAIL'
+      );
+
+      console.log(
+        'REMOTE_V3_SHUTDOWN_DRAIN_ERROR=' +
+        error.message
+      );
+
+      if (code === 0) {
+        code = 90;
+      }
+    }
+  }
+
+  if (drainOk) {
+    try {
+      await client.destroy();
+
+      console.log(
+        'CLIENT_DESTROYED=YES'
+      );
+    } catch (_) {}
+  } else {
+    console.log(
+      'CLIENT_DESTROY_SKIPPED_DRAIN_FAIL=YES'
+    );
+  }
 
   if (
     useRemoteAuth &&
@@ -115,6 +163,9 @@ async function main() {
 
     const store =
       remoteV3.store;
+
+    remoteV3Store =
+      store;
 
     console.log(
       'MONGO_STORE_READY=YES'
