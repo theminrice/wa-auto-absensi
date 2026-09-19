@@ -386,7 +386,7 @@ jobs:
           echo "ATLAS_DYNAMIC_IP_READY=YES"
 
       # WA_AUTO_ABSENSI_SYNC_ONCE_BEFORE_SEND_V1
-      - name: Sync latest self-chat attendance inputs
+      - name: Sync latest Palelu attendance inputs
         shell: bash
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
@@ -410,7 +410,7 @@ jobs:
             attendance-sync.log
 
           grep -Fxq \
-            'SELF_CHAT_CATCHUP_STABLE=YES' \
+            'PALELU_CATCHUP_STABLE=YES' \
             attendance-sync.log
 
           grep -Fxq \

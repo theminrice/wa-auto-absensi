@@ -30,6 +30,12 @@ const {
   parseLeaveCommand
 } = require('./attendance-leave');
 
+const {
+  INPUT_GROUP_NAME,
+  findPaleluGroup,
+  isPaleluMessage
+} = require('./attendance-input-group');
+
 let client = null;
 let shuttingDown = false;
 let ingestQueue = Promise.resolve();
@@ -39,7 +45,7 @@ let readyPipelineStarted = false;
 const syncOnceMode =
   process.argv.includes('--sync-once');
 
-const selfIds = new Set();
+let inputGroupId = null;
 const processedMessageIds = new Set();
 
 // WA_AUTO_ABSENSI_INGEST_CATCHUP_STABILITY_V2
@@ -69,173 +75,23 @@ function requireMongoUri() {
   return uri;
 }
 
-function serializedId(value) {
-  if (!value) {
-    return null;
-  }
+// WA_AUTO_ABSENSI_PALELU_DISCOVERY_V1
+async function resolveInputGroup() {
+  inputGroupId = null;
 
-  if (typeof value === 'string') {
-    return value;
-  }
+  const chats =
+    await client.getChats();
 
-  if (
-    typeof value._serialized === 'string'
-  ) {
-    return value._serialized;
-  }
+  const selected =
+    findPaleluGroup(chats);
 
-  return null;
-}
+  inputGroupId =
+    selected.id;
 
-function collectWhatsAppIds(
-  value,
-  output,
-  seen = new WeakSet()
-) {
-  if (typeof value === 'string') {
-    if (
-      value.endsWith('@c.us') ||
-      value.endsWith('@lid')
-    ) {
-      output.add(value);
-    }
-
-    return;
-  }
-
-  if (
-    value === null ||
-    typeof value !== 'object'
-  ) {
-    return;
-  }
-
-  if (seen.has(value)) {
-    return;
-  }
-
-  seen.add(value);
-
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collectWhatsAppIds(
-        item,
-        output,
-        seen
-      );
-    }
-
-    return;
-  }
-
-  for (const item of Object.values(value)) {
-    collectWhatsAppIds(
-      item,
-      output,
-      seen
-    );
-  }
-}
-
-async function resolveSelfIds() {
-  selfIds.clear();
-
-  const primary =
-    serializedId(
-      client &&
-      client.info &&
-      client.info.wid
-    );
-
-  if (!primary) {
-    throw new Error(
-      'SELF_PRIMARY_ID_NOT_AVAILABLE'
-    );
-  }
-
-  selfIds.add(primary);
-
-  if (
-    typeof client.getContactLidAndPhone ===
-    'function'
-  ) {
-    try {
-      const mapping =
-        await client.getContactLidAndPhone(
-          [primary]
-        );
-
-      collectWhatsAppIds(
-        mapping,
-        selfIds
-      );
-
-      console.log(
-        'SELF_LID_RESOLUTION=PASS'
-      );
-    } catch (error) {
-      console.log(
-        'SELF_LID_RESOLUTION=BEST_EFFORT_FAIL'
-      );
-      console.log(
-        `SELF_LID_RESOLUTION_ERROR=${error.message}`
-      );
-    }
-  }
-
-  console.log(
-    `SELF_ID_CANDIDATE_COUNT=${selfIds.size}`
-  );
-}
-
-async function isSelfChatMessage(message) {
-  if (
-    !message ||
-    message.fromMe !== true
-  ) {
-    return false;
-  }
-
-  const from =
-    serializedId(message.from);
-
-  const to =
-    serializedId(message.to);
-
-  if (
-    from &&
-    to &&
-    from === to &&
-    selfIds.has(from)
-  ) {
-    return true;
-  }
-
-  if (
-    from &&
-    to &&
-    selfIds.has(from) &&
-    selfIds.has(to)
-  ) {
-    return true;
-  }
-
-  try {
-    const chat =
-      await message.getChat();
-
-    const chatId =
-      serializedId(
-        chat && chat.id
-      );
-
-    return (
-      !!chatId &&
-      selfIds.has(chatId)
-    );
-  } catch (_) {
-    return false;
-  }
+  console.log('PALELU_GROUP_FOUND=YES');
+  console.log('PALELU_GROUP_NAME=' + INPUT_GROUP_NAME);
+  console.log('PALELU_GROUP_SAFE=YES');
+  console.log('PALELU_GROUP_ID_FOUND=YES');
 }
 
 function parseProject(body) {
@@ -480,7 +336,7 @@ async function markPersisted(
     },
     {
       $set: {
-        source: 'whatsapp-self-chat',
+        source: 'whatsapp-palelu-group',
         sourceMessageId: messageId
       }
     }
@@ -512,7 +368,7 @@ async function ingestProject(
   );
 
   console.log(
-    'SELF_CHAT_PROJECT_CAPTURED=YES'
+    'PALELU_PROJECT_CAPTURED=YES'
   );
 
   console.log(
@@ -545,7 +401,7 @@ async function ingestLeave(
   );
 
   console.log(
-    'SELF_CHAT_LEAVE_CAPTURED=YES'
+    'PALELU_LEAVE_CAPTURED=YES'
   );
 
   console.log(
@@ -640,7 +496,7 @@ async function ingestDocumentation(
   );
 
   console.log(
-    'SELF_CHAT_DOCUMENTATION_CAPTURED=YES'
+    'PALELU_DOCUMENTATION_CAPTURED=YES'
   );
 
   console.log(
@@ -661,10 +517,13 @@ async function ingestDocumentation(
 }
 
 async function handleMessage(message) {
-  const selfChat =
-    await isSelfChatMessage(message);
+  const paleluInput =
+    await isPaleluMessage(
+      message,
+      inputGroupId
+    );
 
-  if (!selfChat) {
+  if (!paleluInput) {
     return;
   }
 
@@ -716,18 +575,18 @@ async function handleMessage(message) {
       )
     ) {
       console.log(
-        'SELF_CHAT_DUPLICATE_SKIPPED=YES'
+        'PALELU_DUPLICATE_SKIPPED=YES'
       );
 
       return;
     }
 
     console.log(
-      'SELF_CHAT_DUPLICATE_REPLAY_FOR_CURRENT_STATE=YES'
+      'PALELU_DUPLICATE_REPLAY_FOR_CURRENT_STATE=YES'
     );
 
     console.log(
-      `SELF_CHAT_REPLAY_KIND=${kind}`
+      `PALELU_REPLAY_KIND=${kind}`
     );
   } else if (
     current &&
@@ -741,19 +600,19 @@ async function handleMessage(message) {
     );
 
     console.log(
-      'SELF_CHAT_STALE_REPLAY_SKIPPED=YES'
+      'PALELU_STALE_REPLAY_SKIPPED=YES'
     );
 
     console.log(
-      `SELF_CHAT_STALE_KIND=${kind}`
+      `PALELU_STALE_KIND=${kind}`
     );
 
     console.log(
-      `SELF_CHAT_STALE_TIMESTAMP=${messageTimestamp(message).toISOString()}`
+      `PALELU_STALE_TIMESTAMP=${messageTimestamp(message).toISOString()}`
     );
 
     console.log(
-      `SELF_CHAT_CURRENT_TIMESTAMP=${new Date(current.createdAt).toISOString()}`
+      `PALELU_CURRENT_TIMESTAMP=${new Date(current.createdAt).toISOString()}`
     );
 
     return;
@@ -787,179 +646,82 @@ async function handleMessage(message) {
   }
 }
 
-async function startupCatchupSelfChat() {
-  console.log(
-    'SELF_CHAT_CATCHUP_START=YES'
-  );
+// WA_AUTO_ABSENSI_PALELU_CATCHUP_V1
+async function startupCatchupPalelu() {
+  console.log('PALELU_CATCHUP_START=YES');
 
-  const candidateIds =
-    Array.from(selfIds)
-      .filter(id =>
-        typeof id === 'string' &&
-        (
-          id.endsWith('@c.us') ||
-          id.endsWith('@lid')
-        )
-      );
-
-  console.log(
-    `SELF_CHAT_CATCHUP_ID_COUNT=${candidateIds.length}`
-  );
-
-  if (candidateIds.length === 0) {
-    throw new Error(
-      'SELF_CHAT_CATCHUP_NO_SELF_ID'
-    );
+  if (!inputGroupId || !inputGroupId.endsWith('@g.us')) {
+    throw new Error('PALELU_GROUP_NOT_RESOLVED');
   }
 
-  const seenMessageIds =
-    new Set();
+  const chat =
+    await client.getChatById(inputGroupId);
 
-  let successfulChatCount = 0;
-  let fetchedCount = 0;
+  if (
+    !chat ||
+    chat.isGroup !== true ||
+    typeof chat.name !== 'string' ||
+    chat.name.trim() !== INPUT_GROUP_NAME ||
+    typeof chat.fetchMessages !== 'function'
+  ) {
+    throw new Error('PALELU_CATCHUP_GROUP_MISMATCH');
+  }
+
+  const messages =
+    await chat.fetchMessages({ limit: 50 });
+
+  if (!Array.isArray(messages)) {
+    throw new Error('PALELU_CATCHUP_MESSAGES_INVALID');
+  }
+
+  messages.sort((a, b) =>
+    Number(a && a.timestamp || 0) -
+    Number(b && b.timestamp || 0)
+  );
+
+  const seenMessageIds = new Set();
   let relevantCount = 0;
 
-  for (const chatId of candidateIds) {
-    let chat = null;
+  for (const message of messages) {
+    const messageId = getMessageId(message);
 
-    try {
-      chat =
-        await client.getChatById(
-          chatId
-        );
-    } catch (error) {
-      console.log(
-        'SELF_CHAT_CATCHUP_CHAT_LOOKUP=' +
-        'BEST_EFFORT_FAIL'
-      );
-
+    if (messageId && seenMessageIds.has(messageId)) {
       continue;
     }
 
-    if (
-      !chat ||
-      typeof chat.fetchMessages !==
-        'function'
-    ) {
+    if (messageId) {
+      seenMessageIds.add(messageId);
+    }
+
+    const allowed =
+      await isPaleluMessage(message, inputGroupId);
+
+    if (!allowed) {
       continue;
     }
 
-    let messages = [];
-
-    try {
-      messages =
-        await chat.fetchMessages({
-          limit: 50
-        });
-    } catch (error) {
-      console.log(
-        'SELF_CHAT_CATCHUP_FETCH=' +
-        'BEST_EFFORT_FAIL'
-      );
-
-      continue;
-    }
-
-    successfulChatCount += 1;
-
-    if (!Array.isArray(messages)) {
-      continue;
-    }
-
-    fetchedCount +=
-      messages.length;
-
-    messages.sort(
-      (a, b) =>
-        Number(
-          a && a.timestamp || 0
-        ) -
-        Number(
-          b && b.timestamp || 0
-        )
+    const project = parseProject(message.body);
+    const leave = parseLeaveCommand(
+      message.body,
+      messageTimestamp(message)
     );
+    const documentation =
+      isDocumentationImage(message);
 
-    for (const message of messages) {
-      const messageId =
-        getMessageId(message);
-
-      if (
-        messageId &&
-        seenMessageIds.has(messageId)
-      ) {
-        continue;
-      }
-
-      if (messageId) {
-        seenMessageIds.add(
-          messageId
-        );
-      }
-
-      const selfChat =
-        await isSelfChatMessage(
-          message
-        );
-
-      if (!selfChat) {
-        continue;
-      }
-
-      const project =
-        parseProject(
-          message.body
-        );
-
-      const leave =
-        parseLeaveCommand(
-          message.body,
-          messageTimestamp(message)
-        );
-
-      const documentation =
-        isDocumentationImage(
-          message
-        );
-
-      if (
-        !project &&
-        !leave &&
-        !documentation
-      ) {
-        continue;
-      }
-
-      relevantCount += 1;
-
-      await handleMessage(
-        message
-      );
+    if (!project && !leave && !documentation) {
+      continue;
     }
+
+    relevantCount += 1;
+    await handleMessage(message);
   }
 
-  console.log(
-    `SELF_CHAT_CATCHUP_CHAT_COUNT=${successfulChatCount}`
-  );
-
-  console.log(
-    `SELF_CHAT_CATCHUP_FETCHED_COUNT=${fetchedCount}`
-  );
-
-  console.log(
-    `SELF_CHAT_CATCHUP_RELEVANT_COUNT=${relevantCount}`
-  );
-
-  if (successfulChatCount === 0) {
-    throw new Error(
-      'SELF_CHAT_CATCHUP_CHAT_NOT_FOUND'
-    );
-  }
-
-  console.log(
-    'SELF_CHAT_CATCHUP_COMPLETE=YES'
-  );
+  console.log('PALELU_CATCHUP_CHAT_COUNT=1');
+  console.log('PALELU_CATCHUP_FETCHED_COUNT=' + messages.length);
+  console.log('PALELU_CATCHUP_RELEVANT_COUNT=' + relevantCount);
+  console.log('PALELU_CATCHUP_COMPLETE=YES');
 }
-async function startupCatchupSelfChatStable() {
+async function startupCatchupPaleluStable() {
   let successfulSweeps = 0;
   let lastError = null;
 
@@ -969,26 +731,26 @@ async function startupCatchupSelfChatStable() {
     attempt += 1
   ) {
     console.log(
-      `SELF_CHAT_CATCHUP_SWEEP=${attempt}`
+      `PALELU_CATCHUP_SWEEP=${attempt}`
     );
 
     try {
-      await startupCatchupSelfChat();
+      await startupCatchupPalelu();
 
       successfulSweeps += 1;
 
       console.log(
-        `SELF_CHAT_CATCHUP_SWEEP_${attempt}=PASS`
+        `PALELU_CATCHUP_SWEEP_${attempt}=PASS`
       );
     } catch (error) {
       lastError = error;
 
       console.log(
-        `SELF_CHAT_CATCHUP_SWEEP_${attempt}=FAIL`
+        `PALELU_CATCHUP_SWEEP_${attempt}=FAIL`
       );
 
       console.log(
-        'SELF_CHAT_CATCHUP_SWEEP_ERROR=' +
+        'PALELU_CATCHUP_SWEEP_ERROR=' +
         error.message
       );
     }
@@ -998,7 +760,7 @@ async function startupCatchupSelfChatStable() {
       STARTUP_CATCHUP_MAX_SWEEPS
     ) {
       console.log(
-        `SELF_CHAT_CATCHUP_RETRY_WAIT_MS=${STARTUP_CATCHUP_RETRY_MS}`
+        `PALELU_CATCHUP_RETRY_WAIT_MS=${STARTUP_CATCHUP_RETRY_MS}`
       );
 
       await sleep(
@@ -1008,20 +770,20 @@ async function startupCatchupSelfChatStable() {
   }
 
   console.log(
-    `SELF_CHAT_CATCHUP_SUCCESSFUL_SWEEPS=${successfulSweeps}`
+    `PALELU_CATCHUP_SUCCESSFUL_SWEEPS=${successfulSweeps}`
   );
 
   if (successfulSweeps === 0) {
     throw (
       lastError ||
       new Error(
-        'SELF_CHAT_CATCHUP_ALL_SWEEPS_FAILED'
+        'PALELU_CATCHUP_ALL_SWEEPS_FAILED'
       )
     );
   }
 
   console.log(
-    'SELF_CHAT_CATCHUP_STABLE=YES'
+    'PALELU_CATCHUP_STABLE=YES'
   );
 }
 async function shutdown(reason) {
@@ -1307,9 +1069,9 @@ async function main() {
         'REMOTE_POST_READY_SETTLE_DONE=YES'
       );
 
-      await resolveSelfIds();
+      await resolveInputGroup();
 
-      await startupCatchupSelfChatStable();
+      await startupCatchupPaleluStable();
 
       if (syncOnceMode) {
         console.log(
@@ -1329,7 +1091,7 @@ async function main() {
       }
 
       console.log(
-        'SELF_CHAT_INGEST_LISTENER_READY=YES'
+        'PALELU_INGEST_LISTENER_READY=YES'
       );
     } catch (error) {
       console.error(
@@ -1362,7 +1124,7 @@ async function main() {
           )
           .catch(error => {
             console.error(
-              `SELF_CHAT_INGEST_ERROR=${error.message}`
+              `PALELU_INGEST_ERROR=${error.message}`
             );
           });
     }

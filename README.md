@@ -9,6 +9,7 @@ Project ini sudah memiliki jalur **Testing** dan **Production** yang dipisahkan 
 **Production V3 aktif.**
 
 - Production group: `Aktif Tim Magang OCN`
+- Input-only group: `Palelu` (pesan akun sendiri saja)
 - Testing group: `Testing`
 - WhatsApp session: **RemoteAuth V3**
 - Session persistence: **MongoDB Atlas**
@@ -39,7 +40,7 @@ GitHub Actions
         |
         +--> Restore RemoteAuth V3
         |
-        +--> Sync input dari self-chat WhatsApp
+        +--> Sync input dari grup Palelu (fromMe + exact group ID)
         |      |
         |      +--> p: <project>
         |      |
@@ -105,7 +106,23 @@ Testing
 
 Testing digunakan untuk proof end-to-end tanpa mengirim pesan ke grup production.
 
-## Format Input dari Self-Chat
+### Sumber Input — Palelu
+
+```text
+Palelu
+```
+
+Hanya grup bernama **persis `Palelu`** yang diterima sebagai sumber input. Sistem mencari tepat satu grup dengan nama tersebut, memeriksa ID grup WhatsApp (`@g.us`), lalu menerima **hanya pesan yang dikirim oleh akun WhatsApp bot sendiri** (`fromMe=true`). Pesan anggota lain, chat diri sendiri, dan pesan grup tujuan diabaikan. Jika grup tidak ditemukan, namanya berubah, atau ada nama grup duplikat, sync berhenti aman sebelum Check In/Check Out.
+
+Perintah yang dikirim ke `Palelu`:
+
+- `p:Melanjutkan audit backend` → Project.
+- `l:19/9` atau `l:19/9-21/9` → jadwal libur.
+- Foto dengan caption persis `p` → dokumentasi.
+
+**Migrasi data:** Project, dokumentasi, dan rentang libur yang sudah tersimpan sebelumnya di MongoDB tidak dihapus oleh pergantian grup. Kirim Project dan foto terbaru ke `Palelu` sebelum absensi berikutnya apabila ingin mengganti data lama. Input *baru* dari self-chat tidak lagi dibaca. Jangan kirim pesan test ke grup utama `Aktif Tim Magang OCN` hanya untuk verifikasi sumber input.
+
+## Format Input dari Grup Palelu
 
 ### Project
 
@@ -141,14 +158,14 @@ caption: p
 
 Syarat:
 
-- message berasal dari self-chat,
+- pesan berasal dari akun WhatsApp sendiri di grup `Palelu` (ID grup diverifikasi),
 - `hasMedia = true`,
 - media type = `image`,
 - caption exact = `p`.
 
 ## Perintah Libur — `l:`
 
-Perintah libur dikirim lewat **chat diri sendiri**. `p:x` **tidak digunakan untuk libur**; satu-satunya perintah libur adalah `l:`.
+Perintah libur dikirim lewat **grup `Palelu` oleh akun sendiri**. `p:x` **tidak digunakan untuk libur**; satu-satunya perintah libur adalah `l:`.
 
 | Pesan | Arti |
 |---|---|
@@ -178,7 +195,7 @@ ATTENDANCE_RESULT=LEAVE_SKIP
 PRODUCTION_CLOUD_ATTENDANCE=PASS
 ```
 
-**Status fitur:** source dan unit test ada; real self-chat `l:` dan natural production leave-skip baru dinyatakan terverifikasi setelah run yang relevan lulus. Jangan mengirim dummy attendance ke grup utama demi pengujian.
+**Status fitur:** source dan unit test ada; real grup `Palelu` `l:` dan natural production leave-skip baru dinyatakan terverifikasi setelah run yang relevan lulus. Jangan mengirim dummy attendance ke grup utama demi pengujian.
 
 ## Aturan Membersihkan Ruangan
 
@@ -388,7 +405,7 @@ Membuktikan:
 - RemoteAuth V3 restore,
 - no QR,
 - WhatsApp READY,
-- production self-chat sync.
+- sinkronisasi input grup `Palelu` (tanpa mengirim pesan).
 
 ### Full Proof ke Testing
 
@@ -413,13 +430,13 @@ Main production group dilarang pada proof ini.
 
 Manual-only dan hanya menargetkan `Testing`.
 
-### Live Self-Chat Input Proof
+### Legacy Live Self-Chat Input Proof (tidak relevan untuk sumber aktif)
 
 ```text
 .github/workflows/wa-production-v3-live-self-chat-input-proof.yml
 ```
 
-Digunakan untuk menguji jalur self-chat `p:` dan dokumentasi tanpa mengirim ke group.
+Workflow lama menguji self-chat saja dan **tidak lagi membuktikan jalur input aktif `Palelu`**. Jangan menggunakannya untuk memverifikasi migrasi input grup.
 
 ## Hasil Proof Terbaru
 

@@ -36,6 +36,7 @@ jobs:
         run: |
           npm test
           node src/attendance-leave-store.test.js
+          node src/attendance-input-group.test.js
 
       - name: Verify WhatsApp dependencies load
         run: |
@@ -47,6 +48,8 @@ jobs:
           node --check src/attendance-leave.js
           node --check src/attendance-leave.test.js
           node --check src/attendance-leave-store.test.js
+          node --check src/attendance-input-group.js
+          node --check src/attendance-input-group.test.js
           node --check src/duplicate-guard.js
           node --check src/wa-capture-testing.js
           node --check src/wa-read-project.js
@@ -344,7 +347,7 @@ jobs:
 
           grep -Fq 'ATTENDANCE_LEAVE_COMMAND_V1' src/attendance-leave.js
           grep -Fq "kind: 'leave'" src/attendance-input-store.js
-          grep -Fq 'SELF_CHAT_LEAVE_CAPTURED=YES' src/wa-self-chat-ingest-production-v3.js
+          grep -Fq 'PALELU_LEAVE_CAPTURED=YES' src/wa-self-chat-ingest-production-v3.js
 
           # Both live incoming and startup catchup must parse l:
           [ "$(grep -Fc 'parseLeaveCommand(' src/wa-self-chat-ingest-production-v3.js)" = "2" ]
@@ -369,6 +372,50 @@ jobs:
             .github/workflows/wa-attendance-production-v1.yml
 
           echo 'ATTENDANCE_LEAVE_SAFE_SKIP_STATIC_GUARD=PASS'
+
+      - name: Verify Palelu input source and no-send guards
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          SOURCE=src/wa-self-chat-ingest-production-v3.js
+          GROUP=src/attendance-input-group.js
+
+          grep -Fq "INPUT_GROUP_NAME = 'Palelu'" "$GROUP"
+          grep -Fq 'message.fromMe !== true' "$GROUP"
+          grep -Fq "id.endsWith('@g.us')" "$GROUP"
+          grep -Fq 'chat.isGroup === true' "$GROUP"
+          grep -Fq 'PALELU_GROUP_MATCH_COUNT_' "$GROUP"
+
+          grep -Fq 'WA_AUTO_ABSENSI_PALELU_DISCOVERY_V1' "$SOURCE"
+          grep -Fq 'WA_AUTO_ABSENSI_PALELU_CATCHUP_V1' "$SOURCE"
+          grep -Fq 'PALELU_GROUP_FOUND=YES' "$SOURCE"
+          grep -Fq 'PALELU_CATCHUP_STABLE=YES' "$SOURCE"
+          grep -Fq "source: 'whatsapp-palelu-group'" "$SOURCE"
+          grep -Fq 'isPaleluMessage(' "$SOURCE"
+
+          if grep -Eq 'selfIds|isSelfChatMessage|startupCatchupSelfChat' "$SOURCE"; then
+            echo 'LEGACY_SELF_CHAT_INGEST_REMAINS=YES'
+            exit 41
+          fi
+
+          if grep -Fq 'sendMessage(' "$SOURCE" "$GROUP"; then
+            echo 'INPUT_SOURCE_SEND_CALL_FOUND=YES'
+            exit 42
+          fi
+
+          for workflow in \
+            .github/workflows/wa-attendance-production-v1.yml \
+            .github/workflows/wa-production-v3-readiness.yml \
+            .github/workflows/wa-production-v3-all-proof-testing.yml \
+            .github/workflows/wa-production-v3-e2e-proof-testing.yml
+          do
+            grep -Fq 'PALELU_CATCHUP_STABLE=YES' "$workflow"
+          done
+
+          echo 'PALELU_INPUT_SOURCE_STATIC_GUARD=PASS'
+          echo 'LEGACY_SELF_CHAT_INGEST_REMAINS=NO'
+          echo 'INPUT_SOURCE_SEND_CALL_FOUND=NO'
 
       - name: Safe result
         run: |
