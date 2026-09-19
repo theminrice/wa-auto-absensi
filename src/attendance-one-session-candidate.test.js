@@ -217,6 +217,22 @@ async function main() {
   );
 
   assert.equal(
+    (candidateWorkflow.match(
+      /mkdir -p "\\$WWEBJS_REMOTE_DATA_PATH"/g
+    ) || []).length,
+    2,
+    'Each Testing sender must create local RemoteAuth data dir'
+  );
+
+  assert.equal(
+    (candidateWorkflow.match(
+      /ONE_SESSION_REMOTE_DATA_DIR_READY=YES/g
+    ) || []).length,
+    2,
+    'Each Testing sender must confirm local RemoteAuth data dir'
+  );
+
+  assert.equal(
     candidateWorkflow.includes(
       'group: wa-attendance-production-cloud'
     ),
