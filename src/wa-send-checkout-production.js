@@ -583,14 +583,16 @@ async function uploadPhotoVideoFallbackUi(
   page,
   filePath
 ) {
-  // WA_AUTO_ABSENSI_FOOTER_FILE_INPUT_FALLBACK_V1
+  // WA_AUTO_ABSENSI_PHOTO_MENU_FALLBACK_V2
+  // Fail closed: footer image input OR uniquely identified
+  // image+video input (WhatsApp can portal it outside footer).
   const deadline =
     Date.now() + 5000;
 
   while (Date.now() < deadline) {
     const handles =
       await page.$$(
-        'footer input[type="file"]'
+        'input[type="file"]'
       );
 
     const candidates = [];
@@ -608,28 +610,30 @@ async function uploadPhotoVideoFallbackUi(
 
             return {
               accept,
-
               disabled:
                 Boolean(el.disabled),
-
               inFooter:
-                Boolean(
-                  el.closest(
-                    'footer'
-                  )
-                ),
-
+                Boolean(el.closest(
+                  'footer'
+                )),
               hasImage:
                 accept.includes(
-                  'image'
+                  'image/'
+                ),
+              hasVideo:
+                accept.includes(
+                  'video/'
                 )
             };
           });
 
         if (
-          info.inFooter &&
           !info.disabled &&
-          info.hasImage
+          info.hasImage &&
+          (
+            info.inFooter ||
+            info.hasVideo
+          )
         ) {
           candidates.push({
             handle,
@@ -640,22 +644,35 @@ async function uploadPhotoVideoFallbackUi(
     }
 
     console.log(
-      `UI_FOOTER_FILE_INPUT_CANDIDATE_COUNT=${candidates.length}`
+      `UI_IMAGE_FILE_INPUT_CANDIDATE_COUNT=${candidates.length}`
     );
 
     if (candidates.length > 1) {
       throw new Error(
-        'UI_FOOTER_FILE_INPUT_NOT_UNIQUE'
+        'UI_IMAGE_FILE_INPUT_NOT_UNIQUE'
       );
     }
 
     if (candidates.length === 1) {
+      if (
+        !await isProductionUiActive(page)
+      ) {
+        throw new Error(
+          'UI_PRODUCTION_NOT_ACTIVE_BEFORE_FALLBACK'
+        );
+      }
+
       console.log(
-        'UI_FOOTER_FILE_INPUT_FOUND=YES'
+        'UI_IMAGE_FILE_INPUT_SOURCE=' +
+        (
+          candidates[0].info.inFooter
+            ? 'FOOTER'
+            : 'IMAGE_VIDEO'
+        )
       );
 
       console.log(
-        'UI_FOOTER_FILE_INPUT_ACCEPT=' +
+        'UI_IMAGE_FILE_INPUT_ACCEPT=' +
         (
           candidates[0].info.accept ||
           'EMPTY'
@@ -677,7 +694,7 @@ async function uploadPhotoVideoFallbackUi(
   }
 
   throw new Error(
-    'UI_FOOTER_FILE_INPUT_NOT_FOUND'
+    'UI_IMAGE_FILE_INPUT_NOT_FOUND'
   );
 }
 async function selectPhotoVideoUi(
@@ -705,9 +722,32 @@ async function selectPhotoVideoUi(
     );
 
   if (!photoVideo) {
-    throw new Error(
-      'UI_PHOTO_VIDEO_MENU_NOT_FOUND'
+    console.log(
+      'UI_PHOTO_VIDEO_MENU_FOUND=NO'
     );
+
+    console.log(
+      'UI_PHOTO_VIDEO_MENU_FALLBACK_START=YES'
+    );
+
+    try {
+      await uploadPhotoVideoFallbackUi(
+        page,
+        filePath
+      );
+    } catch (error) {
+      console.log(
+        'UI_PHOTO_VIDEO_MENU_FALLBACK_ERROR=' +
+        error.message
+      );
+
+      throw new Error(
+        'UI_PHOTO_VIDEO_MENU_NOT_FOUND_' +
+        error.message
+      );
+    }
+
+    return;
   }
 
   console.log(
