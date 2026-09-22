@@ -435,6 +435,117 @@ function createHardenedRemoteAuthV3Store(
     }
   }
 
+  // WA_REMOTE_V3_CANDIDATE_AWAITED_CLEANUP_V1
+  async function deleteCandidateSnapshotAwaited() {
+    const session =
+      REMOTE_AUTH_V3_CANDIDATE_SESSION;
+
+    const database =
+      mongoose.connection && mongoose.connection.db;
+
+    if (!database) {
+      throw new Error(
+        'REMOTE_V3_CANDIDATE_DATABASE_UNAVAILABLE'
+      );
+    }
+
+    const bucketName =
+      `whatsapp-${session}`;
+
+    const bucket =
+      new mongoose.mongo.GridFSBucket(
+        database,
+        { bucketName }
+      );
+
+    const filename =
+      `${session}.zip`;
+
+    const documents =
+      await bucket.find({
+        filename
+      }).toArray();
+
+    // Fail closed: never guess which snapshot to delete.
+    if (documents.length !== 1) {
+      throw new Error(
+        'REMOTE_V3_CANDIDATE_FILE_COUNT_UNEXPECTED_' +
+          documents.length
+      );
+    }
+
+    const currentFileId =
+      documents[0]._id;
+
+    // Unlike wwebjs-mongo 1.1.0 delete(), await the actual
+    // GridFS operation before allowing shutdown/drain to finish.
+    await bucket.delete(
+      currentFileId
+    );
+
+    const filesCollection =
+      database.collection(
+        `${bucketName}.files`
+      );
+
+    const chunksCollection =
+      database.collection(
+        `${bucketName}.chunks`
+      );
+
+    const remainingFiles =
+      await filesCollection.countDocuments({
+        filename
+      });
+
+    const remainingCurrentChunks =
+      await chunksCollection.countDocuments({
+        files_id: currentFileId
+      });
+
+    if (
+      remainingFiles !== 0 ||
+      remainingCurrentChunks !== 0
+    ) {
+      throw new Error(
+        'REMOTE_V3_CANDIDATE_CURRENT_FILE_NOT_CLEAN_' +
+          remainingFiles + '_' +
+          remainingCurrentChunks
+      );
+    }
+
+    console.log(
+      'REMOTE_V3_CANDIDATE_CURRENT_FILE_CLEANUP=PASS'
+    );
+
+    const remainingAllChunks =
+      await chunksCollection.countDocuments({});
+
+    if (remainingAllChunks === 0) {
+      console.log(
+        'REMOTE_V3_CANDIDATE_BUCKET_EMPTY=YES'
+      );
+
+      console.log(
+        'REMOTE_V3_CANDIDATE_CLEANUP=PASS'
+      );
+    } else {
+      // Existing orphan groups are intentionally NOT deleted here.
+      console.log(
+        'REMOTE_V3_CANDIDATE_BUCKET_EMPTY=NO'
+      );
+
+      console.log(
+        'REMOTE_V3_CANDIDATE_HISTORICAL_CHUNKS_REMAIN=' +
+          remainingAllChunks
+      );
+
+      console.log(
+        'REMOTE_V3_CANDIDATE_CLEANUP=HISTORICAL_REVIEW_REQUIRED'
+      );
+    }
+  }
+
   async function hardenedSave(options) {
     if (
       !options ||
@@ -514,20 +625,7 @@ function createHardenedRemoteAuthV3Store(
       }
 
       try {
-        if (
-          await snapshotExists(
-            REMOTE_AUTH_V3_CANDIDATE_SESSION
-          )
-        ) {
-          await original.delete({
-            session:
-              REMOTE_AUTH_V3_CANDIDATE_SESSION
-          });
-        }
-
-        console.log(
-          'REMOTE_V3_CANDIDATE_CLEANUP=PASS'
-        );
+        await deleteCandidateSnapshotAwaited();
       } catch (error) {
         console.log(
           'REMOTE_V3_CANDIDATE_CLEANUP=BEST_EFFORT_FAIL'
