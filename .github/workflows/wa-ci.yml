@@ -78,6 +78,12 @@ jobs:
           AUDIT=src/wa-mongodb-storage-audit-readonly.js
           WF=.github/workflows/wa-remoteauth-v3-health.yml
           grep -Fq 'WA_MONGO_ATLAS_STORAGE_READONLY_AUDIT_V1' "$AUDIT"
+          grep -Fq 'WA_MONGO_STORAGE_BREAKDOWN_READONLY_V2' "$AUDIT"
+          grep -Fq 'collStats: name' "$AUDIT"
+          grep -Fq 'listDatabases: 1' "$AUDIT"
+          grep -Fq 'MONGO_BREAKDOWN_AUDIT=PASS' "$AUDIT"
+          grep -Fq 'MONGO_BREAKDOWN_BACKUP_' "$AUDIT"
+          grep -Fq 'MONGO_BREAKDOWN_SNAPSHOT_' "$AUDIT"
           grep -Fq 'atlasSize: 1' "$AUDIT"
           grep -Fq 'dbStats: 1' "$AUDIT"
           grep -Fq 'MONGO_STORAGE_AUDIT=PASS' "$AUDIT"
