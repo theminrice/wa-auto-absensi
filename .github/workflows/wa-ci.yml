@@ -59,6 +59,7 @@ jobs:
           node --check src/wa-send-checkin-production.js
           node --check src/wa-send-checkout-production.js
           node --check src/remote-auth-v3.js
+          node --check src/wa-remoteauth-v3-orphan-audit-readonly.js
           node --check src/wa-remote-auth-v3-bootstrap.js
           node --check src/wa-remote-auth-v3-health.js
           node --check src/wa-remote-auth-v3-seed-last-good.js
@@ -69,6 +70,20 @@ jobs:
           node --check src/wa-live-self-chat-input-proof-v3.js
           node --check src/wa-attendance-canonical-guard.js
           echo "SOURCE_SYNTAX=PASS"
+
+      - name: Verify orphan audit is read only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          AUDIT=src/wa-remoteauth-v3-orphan-audit-readonly.js
+          grep -Fq 'REMOTEAUTH_V3_ORPHAN_READONLY_AUDIT_V1' "$AUDIT"
+          grep -Fq 'REMOTE_V3_ORPHAN_AUDIT_ACTIVE_BUCKET_ACCESSED=NO' "$AUDIT"
+          grep -Fq 'REMOTE_V3_ORPHAN_DELETED_COUNT=0' "$AUDIT"
+          if grep -Eq '\\.(deleteOne|deleteMany|drop|updateOne|updateMany|insertOne|insertMany|bulkWrite|replaceOne|findOneAndUpdate)\\s*\\(' "$AUDIT"; then
+            echo "REMOTE_V3_ORPHAN_AUDIT_FORBIDDEN_DB_WRITE=YES"
+            exit 49
+          fi
+          echo "REMOTE_V3_ORPHAN_READONLY_STATIC_GUARD=PASS"
 
       - name: Verify RemoteAuth V3 no-send guards
         shell: bash
