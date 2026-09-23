@@ -1,7 +1,14 @@
 name: WA RemoteAuth V3 Health
 
+# BRANCH ONLY: PALELU_ONE_PHOTO_CAPTURE_TESTING_V1
+# main branch still runs the original restore-only RemoteAuth health check.
 on:
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type Capture-Palelu-Photo to store ONE new Palelu photo
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -14,7 +21,7 @@ jobs:
   health-v3:
     name: RemoteAuth V3 Health
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 12
 
     env:
       MONGODB_URI: ${{ secrets.MONGODB_URI }}
@@ -55,6 +62,22 @@ jobs:
 
           echo "CHROME_PATH=$CHROME_PATH" >> "$GITHUB_ENV"
           echo "CHROME_FOUND=YES"
+
+      - name: Confirm branch and one-photo write permission
+        shell: bash
+        env:
+          CAPTURE_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -Eeuo pipefail
+          test "$GITHUB_REF_NAME" = "fix/palelu-checkout-photo-day-guard-v1-20260923"
+          test "$CAPTURE_CONFIRM" = "Capture-Palelu-Photo"
+          node --check src/wa-palelu-capture-one-testing.js
+          test -f src/attendance-documentation-freshness.js
+          test -f src/attendance-input-group.js
+          echo "PALELU_CAPTURE_BRANCH_GUARD=PASS"
+          echo "PALELU_CAPTURE_CONFIRM=PASS"
+          echo "PALELU_CAPTURE_ONE_REAL_MONGO_DOCUMENTATION_WRITE_AUTHORIZED=YES"
+          echo "NO_WHATSAPP_MESSAGE_WILL_BE_SENT=YES"
 
       - name: Add temporary Atlas runner IP
         shell: bash
@@ -240,20 +263,36 @@ jobs:
 
           echo "ATLAS_IP_ACTIVATION=PASS"
           echo "ATLAS_DYNAMIC_IP_READY=YES"
-      - name: Verify RemoteAuth V3 restore health
+      - name: Capture one new user-sent Palelu photo to MongoDB
         shell: bash
         env:
-          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth-v3-health
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-palelu-photo-capture-v1
+          PALELU_CAPTURE_CONFIRM: ${{ inputs.confirm }}
+          TZ: Asia/Jakarta
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
 
           mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
+          echo "PALELU_CAPTURE_WAIT_FOR_PHOTO_AFTER_READY=YES"
+          echo "PALELU_CAPTURE_NO_CHECKOUT_SEND=YES"
 
-          echo "REMOTE_V3_HEALTH_WORKFLOW_START=YES"
-          echo "RESTORE_ONLY=YES"
-          echo "NO_WHATSAPP_MESSAGE_WILL_BE_SENT=YES"
+          node src/wa-palelu-capture-one-testing.js 2>&1 |
+            tee palelu-capture.log
 
-          node src/wa-remote-auth-v3-health.js
+          grep -Fxq 'PALELU_CAPTURE_STORED=YES' palelu-capture.log
+          grep -Fxq 'PALELU_CAPTURE_READBACK=PASS' palelu-capture.log
+          grep -Fxq 'PALELU_CAPTURE_REMOTE_AUTH_WRITE=DISABLED' palelu-capture.log
+          grep -Fxq 'PALELU_CAPTURE_FINAL=PASS' palelu-capture.log
+          grep -Fxq 'MESSAGE_SENT=NO' palelu-capture.log
+
+          echo "PALELU_CAPTURE_WORKFLOW=PASS"
+
+      - name: Remove ephemeral capture metadata log
+        if: always()
+        shell: bash
+        run: |
+          rm -f palelu-capture.log
+          echo "PALELU_CAPTURE_TEMP_LOG_REMOVED=YES"
 
       - name: Remove temporary Atlas runner IP
         if: always()
