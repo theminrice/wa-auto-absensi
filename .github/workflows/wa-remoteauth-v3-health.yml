@@ -1,5 +1,6 @@
 name: WA RemoteAuth V3 Health
 
+# STORAGE AUDIT BRANCH ONLY: no WhatsApp initialization, data write, or delete.
 on:
   workflow_dispatch:
 
@@ -240,20 +241,29 @@ jobs:
 
           echo "ATLAS_IP_ACTIVATION=PASS"
           echo "ATLAS_DYNAMIC_IP_READY=YES"
-      - name: Verify RemoteAuth V3 restore health
+      # Storage-only branch: no WhatsApp initialization, no database writes.
+      - name: Audit MongoDB Atlas remaining storage read only
         shell: bash
-        env:
-          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth-v3-health
         run: |
-          set -euo pipefail
-
-          mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
-
-          echo "REMOTE_V3_HEALTH_WORKFLOW_START=YES"
-          echo "RESTORE_ONLY=YES"
+          set -Eeuo pipefail
+          test "$GITHUB_REF_NAME" = "audit/mongodb-atlas-storage-readonly-20260923"
+          node --check src/wa-mongodb-storage-audit-readonly.js
+          echo "MONGO_STORAGE_BRANCH_GUARD=PASS"
           echo "NO_WHATSAPP_MESSAGE_WILL_BE_SENT=YES"
+          echo "NO_MONGODB_DATA_WILL_BE_MODIFIED=YES"
+          node src/wa-mongodb-storage-audit-readonly.js \
+            2>&1 | tee mongo-storage-readonly.log
+          grep -Fxq 'MONGO_STORAGE_AUDIT=PASS' mongo-storage-readonly.log
+          grep -Fxq 'MONGO_STORAGE_DB_WRITES=0' mongo-storage-readonly.log
+          grep -Fxq 'MONGO_STORAGE_MESSAGES_SENT=0' mongo-storage-readonly.log
+          echo "MONGO_STORAGE_WORKFLOW=PASS"
 
-          node src/wa-remote-auth-v3-health.js
+      - name: Remove ephemeral storage audit log
+        if: always()
+        shell: bash
+        run: |
+          rm -f mongo-storage-readonly.log
+          echo "MONGO_STORAGE_AUDIT_LOG_REMOVED=YES"
 
       - name: Remove temporary Atlas runner IP
         if: always()
