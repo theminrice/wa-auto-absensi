@@ -44,25 +44,71 @@ const checkOut = buildCheckOut({
 assert(checkOut.includes('Melanjutkan audit sekuritas backend✅'));
 assert(checkOut.includes('Pulang✅'));
 
-// WA_AUTO_ABSENSI_CHECKOUT_DOC_SAME_DAY_GUARD_V1
-const { isCheckoutDocumentationCurrentDay } =
-  require('./attendance-documentation-freshness');
-const docGuardNow = new Date('2026-09-22T09:00:00.000Z'); // 16:00 WIB
-assert.strictEqual(isCheckoutDocumentationCurrentDay(
-  new Date('2026-09-22T07:51:00.000Z'), docGuardNow), true);
-assert.strictEqual(isCheckoutDocumentationCurrentDay(
-  new Date('2026-09-21T09:02:37.000Z'), docGuardNow), false);
-assert.strictEqual(isCheckoutDocumentationCurrentDay(
-  new Date('2026-09-22T16:59:00.000Z'),
-  new Date('2026-09-22T17:01:00.000Z')), false);
-assert.strictEqual(isCheckoutDocumentationCurrentDay(
-  new Date('invalid'), docGuardNow), false);
-assert.strictEqual(isCheckoutDocumentationCurrentDay(
-  '2026-09-22T07:51:00.000Z', docGuardNow), false);
-assert.strictEqual(isCheckoutDocumentationCurrentDay(
-  new Date('2026-09-22T09:06:00.000Z'), docGuardNow), false);
-console.log('CHECKOUT_DOC_SAME_DAY_GUARD_TEST=PASS');
+// WA_AUTO_ABSENSI_CHECKOUT_LATEST_AVAILABLE_DOCUMENTATION_V2
+// A photo from yesterday is still eligible if it is the newest
+// documentation known to the canonical MongoDB store.
+const { getLatestDocumentation } =
+  require('./attendance-input-store');
 
-require('./attendance-leave.test');
+const docOlder = {
+  kind: 'documentation',
+  _id: 1,
+  createdAt: new Date('2026-09-20T09:00:00Z')
+};
+const docNewestAvailable = {
+  kind: 'documentation',
+  _id: 2,
+  createdAt: new Date('2026-09-21T09:00:00Z')
+};
+const newerProject = {
+  kind: 'project',
+  _id: 3,
+  createdAt: new Date('2026-09-23T02:00:00Z')
+};
 
-console.log('TESTS=PASS');
+function mockDocumentationConnection(rows) {
+  return {
+    db: {
+      collection() {
+        return {
+          findOne(filter, options) {
+            assert.deepStrictEqual(
+              filter, { kind: 'documentation' }
+            );
+            assert.deepStrictEqual(
+              options.sort, { createdAt: -1, _id: -1 }
+            );
+            const matching = rows
+              .filter(row => row.kind === filter.kind)
+              .sort((a, b) =>
+                b.createdAt.getTime() - a.createdAt.getTime() ||
+                b._id - a._id
+              );
+            return Promise.resolve(matching[0] || null);
+          }
+        };
+      }
+    }
+  };
+}
+
+Promise.resolve()
+  .then(async () => {
+    const latest = await getLatestDocumentation(
+      mockDocumentationConnection([
+        docOlder, newerProject, docNewestAvailable
+      ])
+    );
+    assert.strictEqual(latest, docNewestAvailable);
+    const none = await getLatestDocumentation(
+      mockDocumentationConnection([newerProject])
+    );
+    assert.strictEqual(none, null);
+    console.log('CHECKOUT_LATEST_AVAILABLE_DOC_TEST=PASS');
+    require('./attendance-leave.test');
+    console.log('TESTS=PASS');
+  })
+  .catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  });
