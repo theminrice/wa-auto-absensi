@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('path');
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 
 const {
@@ -54,6 +55,7 @@ if (diagnosticOnlyMode && syncOnceMode) {
 }
 
 let inputGroupId = null;
+let diagnosticHistorySyncAttempted = false;
 const processedMessageIds = new Set();
 
 // WA_AUTO_ABSENSI_INGEST_CATCHUP_STABILITY_V2
@@ -95,6 +97,25 @@ async function resolveInputGroup() {
 
   inputGroupId =
     selected.id;
+
+  // PALELU_GROUP_IDENTITY_DIAGNOSTIC_V4: fingerprint, never raw group ID.
+  if (diagnosticOnlyMode) {
+    const group = selected.group;
+    const digest = crypto.createHash('sha256')
+      .update(selected.id).digest('hex').slice(0, 16);
+    console.log('PALELU_DIAG_GROUP_IDENTITY=' + JSON.stringify({
+      groupIdFingerprint: digest,
+      groupNameMatchCount: chats.filter(item =>
+        item && item.isGroup === true &&
+        typeof item.name === 'string' &&
+        item.name.trim() === INPUT_GROUP_NAME).length,
+      isReadOnly: Boolean(group.isReadOnly),
+      isArchived: Boolean(group.archived),
+      groupParticipantCount: Array.isArray(group.participants)
+        ? group.participants.length : null,
+      ownAccountPresent: Boolean(client.info && client.info.wid)
+    }));
+  }
 
   // PALELU_ACCOUNT_RECENCY_DIAGNOSTIC_V3
   // Compare group metadata to other chats on the same RemoteAuth session.
@@ -732,6 +753,13 @@ async function startupCatchupPalelu() {
         return {
           chatPresent: true,
           chatTimestamp: Number(raw.t || 0),
+          historyTransferType:
+            Number.isFinite(Number(raw.endOfHistoryTransferType))
+              ? Number(raw.endOfHistoryTransferType) : null,
+          rawParticipantCount:
+            raw.groupMetadata &&
+            Array.isArray(raw.groupMetadata.participants)
+              ? raw.groupMetadata.participants.length : null,
           hasLastReceivedKey: Boolean(raw.lastReceivedKey),
           messageCollectionPresent: Array.isArray(items),
           cachedMessageCount: Array.isArray(items) ? items.length : null,
@@ -753,6 +781,31 @@ async function startupCatchupPalelu() {
 
   if (diagnosticOnlyMode) {
     await historySnapshot('BEFORE_FETCH');
+
+    // PALELU_TARGETED_HISTORY_SYNC_DIAGNOSTIC_V4
+    // One control-plane history-sync request to WhatsApp; NOT a chat message.
+    // No attendance DB writes or persisted RemoteAuth snapshot.
+    if (!diagnosticHistorySyncAttempted) {
+      diagnosticHistorySyncAttempted = true;
+      if (typeof client.syncHistory !== 'function') {
+        console.log('PALELU_DIAG_SYNC_HISTORY=UNSUPPORTED');
+      } else {
+        console.log('PALELU_DIAG_SYNC_HISTORY=REQUEST_START');
+        try {
+          const accepted = await client.syncHistory(inputGroupId);
+          console.log('PALELU_DIAG_SYNC_HISTORY_REQUEST=' +
+            (accepted === true ? 'ACCEPTED' : 'NOT_ACCEPTED'));
+          if (accepted === true) {
+            await sleep(15000);
+            await historySnapshot('AFTER_SYNC_WAIT');
+          }
+        } catch (error) {
+          console.log('PALELU_DIAG_SYNC_HISTORY_ERROR_NAME=' +
+            String(error && error.name || 'UNKNOWN')
+              .replace(/[^A-Za-z_]/g, ''));
+        }
+      }
+    }
   }
 
   const messages =
