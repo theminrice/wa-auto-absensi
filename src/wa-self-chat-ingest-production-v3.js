@@ -675,8 +675,58 @@ async function startupCatchupPalelu() {
     throw new Error('PALELU_CATCHUP_GROUP_MISMATCH');
   }
 
+  // PALELU_HISTORY_SNAPSHOT_DIAGNOSTIC_V2
+  // Inspect the SAME browser chat model used by fetchMessages().
+  // Only counts and timestamps leave the browser; no message text/IDs/media.
+  async function historySnapshot(stage) {
+    try {
+      const result = await client.pupPage.evaluate(async (chatId) => {
+        const raw = await window.WWebJS.getChat(
+          chatId, { getAsModel: false }
+        );
+        if (!raw) {
+          return { chatPresent: false };
+        }
+        const items = raw.msgs &&
+          typeof raw.msgs.getModelsArray === 'function'
+            ? raw.msgs.getModelsArray()
+            : null;
+        const times = Array.isArray(items)
+          ? items.map(item => Number(item && item.t || 0))
+              .filter(value => Number.isFinite(value) && value > 0)
+          : [];
+        return {
+          chatPresent: true,
+          chatTimestamp: Number(raw.t || 0),
+          hasLastReceivedKey: Boolean(raw.lastReceivedKey),
+          messageCollectionPresent: Array.isArray(items),
+          cachedMessageCount: Array.isArray(items) ? items.length : null,
+          cachedEarliestTimestamp: times.length ? Math.min(...times) : null,
+          cachedLatestTimestamp: times.length ? Math.max(...times) : null,
+          cachedImageCount: Array.isArray(items)
+            ? items.filter(item => item && item.type === 'image').length
+            : null
+        };
+      }, inputGroupId);
+      console.log('PALELU_DIAG_HISTORY_' + stage + '=' +
+        JSON.stringify(result));
+    } catch (error) {
+      console.log('PALELU_DIAG_HISTORY_' + stage +
+        '_ERROR_NAME=' + String(error && error.name || 'UNKNOWN')
+          .replace(/[^A-Za-z_]/g, ''));
+    }
+  }
+
+  if (diagnosticOnlyMode) {
+    await historySnapshot('BEFORE_FETCH');
+  }
+
   const messages =
     await chat.fetchMessages({ limit: 50 });
+
+  if (diagnosticOnlyMode) {
+    await historySnapshot('AFTER_FETCH');
+  }
 
   // PALELU_CATCHUP_DIAGNOSTIC_V1: metadata only; no chat content or IDs.
   console.log('PALELU_DIAG_FETCH_LIMIT=50');
