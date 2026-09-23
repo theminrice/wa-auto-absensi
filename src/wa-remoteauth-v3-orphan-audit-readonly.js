@@ -21,10 +21,19 @@ async function auditBucket(db, session, label) {
   const bucket = 'whatsapp-' + session;
   const filesName = bucket + '.files';
   const chunksName = bucket + '.chunks';
-  const found = await db.listCollections({
-    name: { $in: [filesName, chunksName] }
-  }, { nameOnly: true }).toArray();
-  const names = new Set(found.map(x => x.name));
+  // Exact-name metadata queries avoid MongoDB listCollections filter
+  // incompatibilities with $in. ACTIVE bucket contents are never read.
+  console.log('REMOTE_V3_ORPHAN_' + label + '_STAGE=LIST_COLLECTIONS');
+  const names = new Set();
+  for (const name of [filesName, chunksName]) {
+    const found = await db.listCollections(
+      { name }, { nameOnly: true }
+    ).toArray();
+    if (found.some(item => item.name === name)) {
+      names.add(name);
+    }
+  }
+  console.log('REMOTE_V3_ORPHAN_' + label + '_STAGE=READ_FILES');
 
   const files = names.has(filesName)
     ? await db.collection(filesName).find({}, {
@@ -40,6 +49,7 @@ async function auditBucket(db, session, label) {
   const orphanGroups = new Map();
   const linkedGroups = new Map();
   let malformedCount = 0;
+  console.log('REMOTE_V3_ORPHAN_' + label + '_STAGE=COUNT_CHUNKS');
   if (names.has(chunksName)) {
     for await (const chunk of db.collection(chunksName).find({}, {
       projection: { files_id: 1, n: 1 }
@@ -121,8 +131,14 @@ async function main() {
 }
 
 main().catch(error => {
+  const safeMessage = String(error && error.message || 'UNKNOWN')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .slice(0, 180);
   console.error('REMOTE_V3_ORPHAN_AUDIT_ERROR_CODE=' +
-    String(error && error.message || 'UNKNOWN')
-      .replace(/[^A-Z0-9_]/g, ''));
+    (safeMessage || 'UNKNOWN'));
+  console.error('REMOTE_V3_ORPHAN_AUDIT_ERROR_NAME=' +
+    String(error && error.name || 'UNKNOWN')
+      .toUpperCase().replace(/[^A-Z0-9]+/g, '_'));
   process.exitCode = 1;
 });
