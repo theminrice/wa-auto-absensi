@@ -33,6 +33,9 @@ const {
   evaluateLeaveForDate
 } = require('./attendance-leave');
 
+const { isCheckoutDocumentationCurrentDay } =
+  require('./attendance-documentation-freshness');
+
 const EXPECTED_GROUP_NAME = 'Aktif Tim Magang OCN';
 
 // WA_AUTO_ABSENSI_DUAL_AUTH_V1
@@ -2205,6 +2208,20 @@ if (process.env.MONGODB_URI) {
           : 'UNKNOWN'
       }`
     );
+    // WA_AUTO_ABSENSI_CHECKOUT_DOC_SAME_DAY_GUARD_V1
+    // Reject the previous day's canonical image before download/send.
+    // Same-day does not prove the newest photo has synced from Palelu.
+    const documentCurrentDay =
+      isCheckoutDocumentationCurrentDay(latestDocumentation.createdAt);
+    console.log('DOC_IMAGE_SAME_JAKARTA_DAY=' +
+      (documentCurrentDay ? 'YES' : 'NO'));
+
+    if (!documentCurrentDay) {
+      console.log('REASON=DOCUMENTATION_STALE_OR_TIMESTAMP_INVALID');
+      console.log('MESSAGE_SENT=NO');
+      return await finish(client, 37);
+    }
+
     console.log('DOC_IMAGE_PAIR_VALID=YES');
 
     // ========================================================
