@@ -47,11 +47,18 @@ const syncOnceMode =
   process.argv.includes('--sync-once');
 
 // PALELU_DIAGNOSTIC_ONLY_V1: fetch metadata; no attendance writes/send.
+const diagnosticLiveMode =
+  process.argv.includes('--diagnostic-live');
+
+// PALELU_LIVE_EVENT_DIAGNOSTIC_V7: no messages sent, no MongoDB writes.
 const diagnosticOnlyMode =
-  process.argv.includes('--diagnostic-only');
+  process.argv.includes('--diagnostic-only') || diagnosticLiveMode;
 
 if (diagnosticOnlyMode && syncOnceMode) {
   throw new Error('DIAGNOSTIC_AND_SYNC_ONCE_MUTUALLY_EXCLUSIVE');
+}
+if (diagnosticLiveMode && process.argv.includes('--diagnostic-only')) {
+  throw new Error('DIAGNOSTIC_MODES_MUTUALLY_EXCLUSIVE');
 }
 
 let inputGroupId = null;
@@ -1059,6 +1066,73 @@ async function startupCatchupPaleluStable() {
     'PALELU_CATCHUP_STABLE=YES'
   );
 }
+
+// PALELU_LIVE_EVENT_DIAGNOSTIC_V7
+// Wait for one user-sent fresh photo in Palelu. Never call handleMessage,
+// downloadMedia, saveDocumentation, or sendMessage from this listener.
+async function listenLivePaleluDiagnostic() {
+  if (!diagnosticLiveMode || !inputGroupId) {
+    throw new Error('PALELU_LIVE_MODE_OR_GROUP_MISSING');
+  }
+  const waitMs = 180000;
+  const startSeconds = Math.floor(Date.now() / 1000);
+  let ownPaleluEvents = 0;
+  let completed = false;
+  let timer = null;
+  let onMessage = null;
+
+  const outcome = await new Promise(resolve => {
+    const finish = success => {
+      if (completed) return;
+      completed = true;
+      clearTimeout(timer);
+      client.removeListener('message_create', onMessage);
+      console.log('PALELU_LIVE_OWN_GROUP_EVENTS=' + ownPaleluEvents);
+      console.log('PALELU_LIVE_DOCUMENTATION_RECEIVED=' +
+        (success ? 'YES' : 'NO'));
+      resolve(success);
+    };
+
+    onMessage = async message => {
+      if (completed || !message || message.fromMe !== true) return;
+      try {
+        if (!(await isPaleluMessage(message, inputGroupId))) return;
+        if (completed) return;
+        ownPaleluEvents += 1;
+        const timestamp = Number(message.timestamp || 0);
+        const relevant = isDocumentationImage(message);
+        // Only metadata of messages sent by own account in Palelu.
+        console.log('PALELU_LIVE_EVENT=' + JSON.stringify({
+          timestamp,
+          fromMe: true,
+          type: message.type || null,
+          hasMedia: message.hasMedia === true,
+          captionIsP: typeof message.body === 'string' &&
+            message.body.trim().toLowerCase() === 'p',
+          documentation: relevant,
+          afterListenerStart: Number.isFinite(timestamp) &&
+            timestamp >= startSeconds - 30
+        }));
+        if (relevant && Number.isFinite(timestamp) &&
+            timestamp >= startSeconds - 30) {
+          finish(true);
+        }
+      } catch (error) {
+        console.log('PALELU_LIVE_EVENT_ERROR_NAME=' +
+          String(error && error.name || 'UNKNOWN')
+            .replace(/[^A-Za-z_]/g, ''));
+      }
+    };
+
+    client.on('message_create', onMessage);
+    timer = setTimeout(() => finish(false), waitMs);
+    console.log('PALELU_LIVE_READY=YES');
+    console.log('PALELU_LIVE_WINDOW_SECONDS=180');
+    console.log('PALELU_LIVE_USER_ACTION=SEND_NEW_IMAGE_CAPTION_P');
+  });
+  return outcome;
+}
+
 async function shutdown(reason) {
   if (shuttingDown) {
     return;
@@ -1359,6 +1433,14 @@ async function main() {
       );
 
       await resolveInputGroup();
+
+      if (diagnosticLiveMode) {
+        const received = await listenLivePaleluDiagnostic();
+        console.log('MESSAGE_SENT=NO');
+        await shutdown('DIAGNOSTIC_LIVE_COMPLETE');
+        process.exit(received ? 0 : 3);
+        return;
+      }
 
       await startupCatchupPaleluStable();
 
