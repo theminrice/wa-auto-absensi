@@ -103,17 +103,42 @@ async function resolveInputGroup() {
     const group = selected.group;
     const digest = crypto.createHash('sha256')
       .update(selected.id).digest('hex').slice(0, 16);
+    // PALELU_GROUP_METADATA_DIAGNOSTIC_V5: compare with Group Info UI.
+    const metadata = group.groupMetadata || null;
+    const members = metadata && metadata.participants;
+    const memberCount = Array.isArray(members)
+      ? members.length
+      : members && typeof members.length === 'number'
+        ? members.length : null;
+    const creation = Number(metadata && metadata.creation || 0);
+    const ownId = client.info && client.info.wid &&
+      client.info.wid._serialized;
+    const ownerId = metadata && metadata.owner &&
+      (metadata.owner._serialized || metadata.owner);
     console.log('PALELU_DIAG_GROUP_IDENTITY=' + JSON.stringify({
       groupIdFingerprint: digest,
       groupNameMatchCount: chats.filter(item =>
         item && item.isGroup === true &&
         typeof item.name === 'string' &&
         item.name.trim() === INPUT_GROUP_NAME).length,
+      similarlyNamedGroups: chats.filter(item =>
+        item && item.isGroup === true &&
+        typeof item.name === 'string' &&
+        item.name.trim().toLowerCase() ===
+          INPUT_GROUP_NAME.toLowerCase()).length,
       isReadOnly: Boolean(group.isReadOnly),
       isArchived: Boolean(group.archived),
-      groupParticipantCount: Array.isArray(group.participants)
-        ? group.participants.length : null,
-      ownAccountPresent: Boolean(client.info && client.info.wid)
+      groupParticipantCount: memberCount,
+      groupMetadataPresent: Boolean(metadata),
+      groupCreationTimestamp: Number.isFinite(creation) &&
+        creation > 0 ? creation : null,
+      groupDescriptionPresent: Boolean(
+        metadata && typeof metadata.desc === 'string' &&
+        metadata.desc.trim()
+      ),
+      groupOwnerIsOwnAccount: ownId && ownerId
+        ? ownId === ownerId : null,
+      ownAccountPresent: Boolean(ownId)
     }));
   }
 
