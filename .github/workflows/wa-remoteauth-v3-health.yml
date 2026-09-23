@@ -240,20 +240,46 @@ jobs:
 
           echo "ATLAS_IP_ACTIVATION=PASS"
           echo "ATLAS_DYNAMIC_IP_READY=YES"
-      - name: Verify RemoteAuth V3 restore health
+      # BRANCH ONLY: PALELU_DIAGNOSTIC_WORKFLOW_V1.
+      # On main this workflow remains the original RemoteAuth health probe.
+      - name: Diagnose Palelu history without sending or attendance writes
         shell: bash
         env:
-          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-remoteauth-v3-health
+          WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-palelu-diagnostic-v1
+          TZ: Asia/Jakarta
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
+
+          test "$GITHUB_REF_NAME" = "diagnostic/palelu-catchup-visibility-v1-20260923"
+          grep -Fq 'PALELU_DIAGNOSTIC_ONLY_V1' src/wa-self-chat-ingest-production-v3.js
+          grep -Fq 'PALELU_CATCHUP_DIAGNOSTIC_V1' src/wa-self-chat-ingest-production-v3.js
+          node --check src/wa-self-chat-ingest-production-v3.js
 
           mkdir -p "$WWEBJS_REMOTE_DATA_PATH"
 
-          echo "REMOTE_V3_HEALTH_WORKFLOW_START=YES"
-          echo "RESTORE_ONLY=YES"
+          echo "PALELU_DIAGNOSTIC_MODE=YES"
           echo "NO_WHATSAPP_MESSAGE_WILL_BE_SENT=YES"
+          echo "NO_ATTENDANCE_DATABASE_WRITES=YES"
 
-          node src/wa-remote-auth-v3-health.js
+          node src/wa-self-chat-ingest-production-v3.js --diagnostic-only \
+            2>&1 | tee palelu-diagnostic.log
+
+          grep -Fxq 'PALELU_DIAG_ATTENDANCE_DB_WRITES=DISABLED' palelu-diagnostic.log
+          grep -Fxq 'PALELU_DIAG_REMOTE_AUTH_WRITE=DISABLED' palelu-diagnostic.log
+          grep -Fxq 'PALELU_DIAG_FETCH_COMPLETE=YES' palelu-diagnostic.log
+          grep -Fxq 'MESSAGE_SENT=NO' palelu-diagnostic.log
+          if grep -Fxq 'MESSAGE_SENT=YES' palelu-diagnostic.log; then
+            echo "PALELU_DIAG_UNEXPECTED_SEND=YES"
+            exit 44
+          fi
+          echo "PALELU_DIAGNOSTIC_RUNTIME_CAPTURE=PASS"
+
+      - name: Remove diagnostic metadata log
+        if: always()
+        shell: bash
+        run: |
+          rm -f palelu-diagnostic.log
+          echo "PALELU_DIAG_EPHEMERAL_LOG_REMOVED=YES"
 
       - name: Remove temporary Atlas runner IP
         if: always()
