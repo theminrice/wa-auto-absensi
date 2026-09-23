@@ -25,16 +25,13 @@ const {
 const {
   getLatestProject,
   getLatestLeave,
-  getLatestDocumentationAfter,
+  getLatestDocumentation,
   downloadDocumentation
 } = require('./attendance-input-store');
 
 const {
   evaluateLeaveForDate
 } = require('./attendance-leave');
-
-const { isCheckoutDocumentationCurrentDay } =
-  require('./attendance-documentation-freshness');
 
 const EXPECTED_GROUP_NAME = 'Aktif Tim Magang OCN';
 
@@ -2179,14 +2176,13 @@ if (process.env.MONGODB_URI) {
     );
 
     // ========================================================
-    // 4. FIND DOCUMENTATION AFTER PROJECT
+    // 4. FIND THE LATEST AVAILABLE DOCUMENTATION
     // ========================================================
 
     const latestDocumentation =
       await timeout(
-        getLatestDocumentationAfter(
-          mongoose.connection,
-          latestProject.createdAt
+        getLatestDocumentation(
+          mongoose.connection
         ),
         30000,
         'GET_LATEST_DOCUMENTATION'
@@ -2194,7 +2190,7 @@ if (process.env.MONGODB_URI) {
 
     if (!latestDocumentation) {
       console.log('DOC_IMAGE_FOUND=NO');
-      console.log('REASON=NO_IMAGE_p_AFTER_LATEST_PROJECT');
+      console.log('REASON=NO_AVAILABLE_DOCUMENTATION');
       console.log('MESSAGE_SENT=NO');
 
       return await finish(client, 33);
@@ -2208,21 +2204,13 @@ if (process.env.MONGODB_URI) {
           : 'UNKNOWN'
       }`
     );
-    // WA_AUTO_ABSENSI_CHECKOUT_DOC_SAME_DAY_GUARD_V1
-    // Reject the previous day's canonical image before download/send.
-    // Same-day does not prove the newest photo has synced from Palelu.
-    const documentCurrentDay =
-      isCheckoutDocumentationCurrentDay(latestDocumentation.createdAt);
-    console.log('DOC_IMAGE_SAME_JAKARTA_DAY=' +
-      (documentCurrentDay ? 'YES' : 'NO'));
-
-    if (!documentCurrentDay) {
-      console.log('REASON=DOCUMENTATION_STALE_OR_TIMESTAMP_INVALID');
-      console.log('MESSAGE_SENT=NO');
-      return await finish(client, 37);
-    }
-
-    console.log('DOC_IMAGE_PAIR_VALID=YES');
+    // WA_AUTO_ABSENSI_CHECKOUT_LATEST_AVAILABLE_DOCUMENTATION_V2
+    // Palelu sync runs before this sender. Accept the latest canonical
+    // photo even if it is from a previous day or precedes the project.
+    // This does not prove newer, unsynced Palelu photos do not exist.
+    console.log('DOC_IMAGE_SELECTION=LATEST_AVAILABLE_CANONICAL');
+    console.log('DOC_IMAGE_AGE_RESTRICTION=NONE');
+    console.log('DOC_IMAGE_SELECTED=YES');
 
     // ========================================================
     // 5. DOWNLOAD DOCUMENTATION FROM GRIDFS
