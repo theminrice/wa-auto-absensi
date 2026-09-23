@@ -63,12 +63,29 @@ jobs:
           node --check src/wa-remote-auth-v3-health.js
           node --check src/wa-remote-auth-v3-seed-last-good.js
           node --check src/wa-self-chat-ingest-production-v3.js
+          node --check src/wa-palelu-capture-one-testing.js
+          node --check src/attendance-documentation-freshness.js
           node --check src/wa-send-checkout-v3-proof-testing.js
           node --check src/wa-send-checkin-v3-proof-testing.js
           node --check src/wa-input-parser-v3-proof.js
           node --check src/wa-live-self-chat-input-proof-v3.js
           node --check src/wa-attendance-canonical-guard.js
           echo "SOURCE_SYNTAX=PASS"
+
+      - name: Verify one-photo capture safety markers
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          grep -Fq 'PALELU_ONE_PHOTO_CAPTURE_TESTING_V1' src/wa-palelu-capture-one-testing.js
+          grep -Fq 'PALELU_CAPTURE_GROUP_IDENTITY=PASS' src/wa-palelu-capture-one-testing.js
+          grep -Fq 'PALELU_CAPTURE_READBACK=PASS' src/wa-palelu-capture-one-testing.js
+          grep -Fq 'PALELU_CAPTURE_REMOTE_AUTH_WRITE=DISABLED' src/wa-palelu-capture-one-testing.js
+          grep -Fq 'PALELU_CAPTURE_READY=YES' src/wa-palelu-capture-one-testing.js
+          if grep -Fq 'sendMessage(' src/wa-palelu-capture-one-testing.js; then
+            echo "PALELU_CAPTURE_SEND_CALL_FOUND=YES"
+            exit 44
+          fi
+          echo "PALELU_CAPTURE_STATIC_GUARDS=PASS"
 
       - name: Verify RemoteAuth V3 no-send guards
         shell: bash
