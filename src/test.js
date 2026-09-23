@@ -44,6 +44,25 @@ const checkOut = buildCheckOut({
 assert(checkOut.includes('Melanjutkan audit sekuritas backend✅'));
 assert(checkOut.includes('Pulang✅'));
 
+// WA_AUTO_ABSENSI_CHECKOUT_DOC_SAME_DAY_GUARD_V1
+const { isCheckoutDocumentationCurrentDay } =
+  require('./attendance-documentation-freshness');
+const docGuardNow = new Date('2026-09-22T09:00:00.000Z'); // 16:00 WIB
+assert.strictEqual(isCheckoutDocumentationCurrentDay(
+  new Date('2026-09-22T07:51:00.000Z'), docGuardNow), true);
+assert.strictEqual(isCheckoutDocumentationCurrentDay(
+  new Date('2026-09-21T09:02:37.000Z'), docGuardNow), false);
+assert.strictEqual(isCheckoutDocumentationCurrentDay(
+  new Date('2026-09-22T16:59:00.000Z'),
+  new Date('2026-09-22T17:01:00.000Z')), false);
+assert.strictEqual(isCheckoutDocumentationCurrentDay(
+  new Date('invalid'), docGuardNow), false);
+assert.strictEqual(isCheckoutDocumentationCurrentDay(
+  '2026-09-22T07:51:00.000Z', docGuardNow), false);
+assert.strictEqual(isCheckoutDocumentationCurrentDay(
+  new Date('2026-09-22T09:06:00.000Z'), docGuardNow), false);
+console.log('CHECKOUT_DOC_SAME_DAY_GUARD_TEST=PASS');
+
 require('./attendance-leave.test');
 
 console.log('TESTS=PASS');
