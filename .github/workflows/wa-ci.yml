@@ -58,6 +58,7 @@ jobs:
           node --check src/wa-send-checkout-testing.js
           node --check src/wa-send-checkin-production.js
           node --check src/wa-send-checkout-production.js
+          node --check src/attendance-documentation-freshness.js
           node --check src/remote-auth-v3.js
           node --check src/wa-remote-auth-v3-bootstrap.js
           node --check src/wa-remote-auth-v3-health.js
@@ -69,6 +70,44 @@ jobs:
           node --check src/wa-live-self-chat-input-proof-v3.js
           node --check src/wa-attendance-canonical-guard.js
           echo "SOURCE_SYNTAX=PASS"
+
+      - name: Verify Production Check Out same-day documentation guard
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PROD=src/wa-send-checkout-production.js
+          HELPER=src/attendance-documentation-freshness.js
+          grep -Fq 'WA_AUTO_ABSENSI_CHECKOUT_DOC_SAME_DAY_GUARD_V1' "$PROD"
+          grep -Fq "require('./attendance-documentation-freshness')" "$PROD"
+          grep -Fq "timeZone: 'Asia/Jakarta'" "$HELPER"
+          grep -Fq 'DOC_IMAGE_SAME_JAKARTA_DAY=' "$PROD"
+          grep -Fq 'REASON=DOCUMENTATION_STALE_OR_TIMESTAMP_INVALID' "$PROD"
+          grep -Fq 'return await finish(client, 37);' "$PROD"
+          node <<'NODE'
+          const fs = require('fs');
+          const src = fs.readFileSync('src/wa-send-checkout-production.js', 'utf8');
+          const unique = needle => {
+            const start = src.indexOf(needle);
+            if (start < 0 || src.indexOf(needle, start + needle.length) >= 0) {
+              throw new Error('PRODUCTION_GUARD_MARKER_COUNT_INVALID_' + needle);
+            }
+            return start;
+          };
+          const selected = unique('DOC_IMAGE_TIMESTAMP=');
+          const guarded = unique(
+            'isCheckoutDocumentationCurrentDay(latestDocumentation.createdAt)'
+          );
+          const permitted = unique('DOC_IMAGE_PAIR_VALID=YES');
+          const downloaded = unique('DOWNLOAD_MEDIA_START=YES');
+          if (!(selected < guarded && guarded < permitted &&
+                permitted < downloaded)) {
+            throw new Error('PRODUCTION_DOC_GUARD_ORDER_INVALID');
+          }
+          console.log('PRODUCTION_DOC_GUARD_ORDER=PASS');
+          NODE
+          echo 'PRODUCTION_CHECKOUT_DOC_SAME_DAY_GUARD=PASS'
+          echo 'WHATSAPP_LOGIN=NO'
+          echo 'MESSAGE_SENT=NO'
 
       - name: Verify RemoteAuth V3 no-send guards
         shell: bash
