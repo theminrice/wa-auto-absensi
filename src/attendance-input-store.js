@@ -626,6 +626,26 @@ async function getLatestProject(connection) {
   );
 }
 
+// WA_AUTO_ABSENSI_CHECKOUT_LATEST_AVAILABLE_DOCUMENTATION_V2
+// Select the most recent documentation currently in the canonical store,
+// regardless of its calendar date or when the latest project was submitted.
+// The Palelu sync step runs separately before production Check Out.
+// An unavailable newer Palelu message cannot be inferred from this query.
+async function getLatestDocumentation(connection) {
+  const collection =
+    getInputCollection(connection);
+
+  return collection.findOne(
+    { kind: 'documentation' },
+    {
+      sort: {
+        createdAt: -1,
+        _id: -1
+      }
+    }
+  );
+}
+
 async function getLatestDocumentationAfter(
   connection,
   projectTimestamp
@@ -710,5 +730,6 @@ module.exports = {
   getLatestLeave,
   getLatestProject,
   getLatestDocumentationAfter,
+  getLatestDocumentation,
   downloadDocumentation
 };
