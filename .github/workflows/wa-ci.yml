@@ -60,6 +60,7 @@ jobs:
           node --check src/wa-send-checkout-production.js
           node --check src/remote-auth-v3.js
           node --check src/wa-remoteauth-v3-orphan-audit-readonly.js
+          node --check src/wa-remoteauth-v3-candidate-cleanup-guarded.js
           node --check src/wa-remote-auth-v3-bootstrap.js
           node --check src/wa-remote-auth-v3-health.js
           node --check src/wa-remote-auth-v3-seed-last-good.js
@@ -84,6 +85,30 @@ jobs:
             exit 49
           fi
           echo "REMOTE_V3_ORPHAN_READONLY_STATIC_GUARD=PASS"
+
+      - name: Verify guarded Candidate cleanup source and workflow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SCRIPT=src/wa-remoteauth-v3-candidate-cleanup-guarded.js
+          WORKFLOW=.github/workflows/wa-remoteauth-v3-health.yml
+          grep -Fq 'REMOTEAUTH_V3_CANDIDATE_GUARDED_CLEANUP_V1' "$SCRIPT"
+          grep -Fq "CANDIDATE_BACKUP_READBACK=PASS" "$SCRIPT"
+          grep -Fq "CANDIDATE_FINGERPRINT_CHANGED" "$SCRIPT"
+          grep -Fq "CANDIDATE_CHANGED_DURING_BACKUP" "$SCRIPT"
+          grep -Fq "LAST_GOOD_BUCKET_WRITE=NO" "$SCRIPT"
+          grep -Fq "ACTIVE_BUCKET_READ_OR_WRITE=NO" "$SCRIPT"
+          grep -Fq "CANDIDATE_PREFLIGHT=PASS" "$SCRIPT"
+          grep -Fq "CANDIDATE_GUARDED_CLEANUP=PASS" "$SCRIPT"
+          grep -Fq "CANDIDATE_POSTCHECK_CHUNKS=0" "$SCRIPT"
+          grep -Fq 'Delete-261-Candidate-Orphans' "$SCRIPT"
+          grep -Fq 'wa-attendance-production-cloud' "$WORKFLOW"
+          grep -Fq 'cleanup/remoteauth-v3-candidate-guarded-v1-20260923' "$WORKFLOW"
+          if grep -Fq 'REMOTE_AUTH_V3_ACTIVE_SESSION' "$SCRIPT"; then
+            echo "CANDIDATE_CLEANUP_ACTIVE_REFERENCE_FOUND=YES"
+            exit 48
+          fi
+          echo "CANDIDATE_CLEANUP_STATIC_GUARDS=PASS"
 
       - name: Verify RemoteAuth V3 no-send guards
         shell: bash
