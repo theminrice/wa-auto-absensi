@@ -28,6 +28,9 @@ const {
   downloadDocumentation
 } = require('./attendance-input-store');
 
+const { isCheckoutDocumentationCurrentDay } =
+  require('./attendance-documentation-freshness');
+
 const EXPECTED_GROUP_NAME = 'Testing';
 
 // WA_PRODUCTION_V3_E2E_PROOF_TESTING_V1
@@ -2138,6 +2141,20 @@ if (process.env.MONGODB_URI) {
           : 'UNKNOWN'
       }`
     );
+    // WA_AUTO_ABSENSI_CHECKOUT_DOC_SAME_DAY_GUARD_V1
+    // Never send yesterday's canonical image as today's documentation.
+    // This guard does not claim that a same-day image is the newest.
+    const documentCurrentDay =
+      isCheckoutDocumentationCurrentDay(latestDocumentation.createdAt);
+    console.log('DOC_IMAGE_SAME_JAKARTA_DAY=' +
+      (documentCurrentDay ? 'YES' : 'NO'));
+
+    if (!documentCurrentDay) {
+      console.log('REASON=DOCUMENTATION_STALE_OR_TIMESTAMP_INVALID');
+      console.log('MESSAGE_SENT=NO');
+      return await finish(client, 37);
+    }
+
     console.log('DOC_IMAGE_PAIR_VALID=YES');
 
     // ========================================================
