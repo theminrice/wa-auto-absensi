@@ -56,6 +56,7 @@ if (diagnosticOnlyMode && syncOnceMode) {
 
 let inputGroupId = null;
 let diagnosticHistorySyncAttempted = false;
+let diagnosticSearchAttempted = false;
 const processedMessageIds = new Set();
 
 // WA_AUTO_ABSENSI_INGEST_CATCHUP_STABILITY_V2
@@ -838,6 +839,79 @@ async function startupCatchupPalelu() {
 
   if (diagnosticOnlyMode) {
     await historySnapshot('AFTER_FETCH');
+
+    // PALELU_SCOPED_SEARCH_DIAGNOSTIC_V6
+    // Test whether WhatsApp search can see recent caption-p media
+    // when chat.fetchMessages() is stuck on stale browser history.
+    // Read only: no media download, no message content or IDs in logs.
+    if (!diagnosticSearchAttempted) {
+      diagnosticSearchAttempted = true;
+      if (typeof client.searchMessages !== 'function') {
+        console.log('PALELU_DIAG_SEARCH=UNSUPPORTED');
+      } else {
+        console.log('PALELU_DIAG_SEARCH=START');
+        let timeoutHandle = null;
+        try {
+          const search = client.searchMessages('p', {
+            page: 0,
+            limit: 30,
+            chatId: inputGroupId
+          });
+          const result = await Promise.race([
+            search,
+            new Promise((_, reject) => {
+              timeoutHandle = setTimeout(
+                () => reject(new Error('SEARCH_TIMEOUT')), 25000
+              );
+            })
+          ]);
+          if (!Array.isArray(result)) {
+            throw new Error('SEARCH_RESULT_NOT_ARRAY');
+          }
+          let groupMatches = 0;
+          let ownImageCaptionP = 0;
+          let newestGroupTimestamp = null;
+          let oldestGroupTimestamp = null;
+          for (const item of result.slice(0, 30)) {
+            if (!(await isPaleluMessage(item, inputGroupId))) {
+              continue;
+            }
+            groupMatches += 1;
+            const seconds = Number(item.timestamp || 0);
+            if (Number.isFinite(seconds) && seconds > 0) {
+              newestGroupTimestamp = newestGroupTimestamp === null
+                ? seconds : Math.max(newestGroupTimestamp, seconds);
+              oldestGroupTimestamp = oldestGroupTimestamp === null
+                ? seconds : Math.min(oldestGroupTimestamp, seconds);
+            }
+            if (isDocumentationImage(item)) {
+              ownImageCaptionP += 1;
+              console.log('PALELU_DIAG_SEARCH_DOCUMENTATION_TIMESTAMP=' +
+                seconds);
+            }
+          }
+          console.log('PALELU_DIAG_SEARCH_RESULT=' + JSON.stringify({
+            returnedCount: result.length,
+            ownPaleluMessageCount: groupMatches,
+            ownImageCaptionPCount: ownImageCaptionP,
+            oldestPaleluTimestamp: oldestGroupTimestamp,
+            newestPaleluTimestamp: newestGroupTimestamp
+          }));
+          await historySnapshot('AFTER_SEARCH');
+        } catch (error) {
+          console.log('PALELU_DIAG_SEARCH_ERROR_NAME=' +
+            String(error && error.name || 'UNKNOWN')
+              .replace(/[^A-Za-z_]/g, ''));
+          console.log('PALELU_DIAG_SEARCH_ERROR_CODE=' +
+            (error && error.message === 'SEARCH_TIMEOUT'
+              ? 'TIMEOUT' : 'OTHER'));
+        } finally {
+          if (timeoutHandle !== null) {
+            clearTimeout(timeoutHandle);
+          }
+        }
+      }
+    }
   }
 
   // PALELU_CATCHUP_DIAGNOSTIC_V1: metadata only; no chat content or IDs.
