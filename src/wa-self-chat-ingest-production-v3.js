@@ -96,6 +96,40 @@ async function resolveInputGroup() {
   inputGroupId =
     selected.id;
 
+  // PALELU_ACCOUNT_RECENCY_DIAGNOSTIC_V3
+  // Compare group metadata to other chats on the same RemoteAuth session.
+  // Counts and timestamps only: never print other chat names or IDs.
+  if (diagnosticOnlyMode) {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const weekAgo = nowSeconds - 7 * 24 * 60 * 60;
+    const validTime = value => {
+      const seconds = Number(value || 0);
+      return Number.isFinite(seconds) &&
+        seconds > 0 && seconds <= nowSeconds + 86400
+        ? seconds : null;
+    };
+    const times = chats
+      .map(item => validTime(item && item.timestamp))
+      .filter(value => value !== null);
+    const paleluTime =
+      validTime(selected.group && selected.group.timestamp);
+    const last = selected.group && selected.group.lastMessage;
+    console.log('PALELU_DIAG_ACCOUNT_RECENCY=' + JSON.stringify({
+      chatCount: chats.length,
+      groupCount: chats.filter(item => item && item.isGroup).length,
+      chatsWithActivityTimestamp: times.length,
+      chatsActiveLast7Days:
+        times.filter(value => value >= weekAgo).length,
+      newestChatActivityTimestamp:
+        times.length ? Math.max(...times) : null,
+      paleluActivityTimestamp: paleluTime,
+      paleluLastMessageTimestamp:
+        validTime(last && last.timestamp),
+      paleluLastMessageType: last && last.type || null,
+      paleluLastMessageHasMedia: Boolean(last && last.hasMedia)
+    }));
+  }
+
   console.log('PALELU_GROUP_FOUND=YES');
   console.log('PALELU_GROUP_NAME=' + INPUT_GROUP_NAME);
   console.log('PALELU_GROUP_SAFE=YES');
