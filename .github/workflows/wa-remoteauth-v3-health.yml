@@ -1,14 +1,36 @@
 name: WA RemoteAuth V3 Health
 
-# AUDIT BRANCH ONLY: historical orphan inventory, no WhatsApp or DB write.
+# BRANCH ONLY: LAST_GOOD preflight, or explicitly fingerprint-approved cleanup.
+# main continues to run its original RemoteAuth V3 Health workflow.
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Read-only preflight first; cleanup requires both fingerprints
+        required: true
+        type: choice
+        options:
+          - preflight
+          - cleanup
+        default: preflight
+      expected_orphan_fingerprint:
+        description: Cleanup only - exact 64-character orphan fingerprint
+        required: false
+        type: string
+      expected_valid_fingerprint:
+        description: Cleanup only - exact 64-character valid LAST_GOOD fingerprint
+        required: false
+        type: string
+      confirm:
+        description: Cleanup only - type Delete-52-LAST_GOOD-Orphans
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: wa-remoteauth-v3-health
+  group: wa-attendance-production-cloud
   cancel-in-progress: false
 
 jobs:
@@ -241,27 +263,53 @@ jobs:
 
           echo "ATLAS_IP_ACTIVATION=PASS"
           echo "ATLAS_DYNAMIC_IP_READY=YES"
-      - name: Audit historical Candidate and LAST_GOOD orphan chunks read only
+      - name: Guarded LAST_GOOD orphan preflight or cleanup
         shell: bash
+        env:
+          LAST_GOOD_CLEANUP_MODE: ${{ inputs.mode }}
+          LAST_GOOD_EXPECTED_ORPHAN_FINGERPRINT: ${{ inputs.expected_orphan_fingerprint }}
+          LAST_GOOD_EXPECTED_VALID_FINGERPRINT: ${{ inputs.expected_valid_fingerprint }}
+          LAST_GOOD_CLEANUP_CONFIRM: ${{ inputs.confirm }}
         run: |
           set -Eeuo pipefail
-          test "$GITHUB_REF_NAME" = "audit/remoteauth-v3-orphans-readonly-20260923"
-          node --check src/wa-remoteauth-v3-orphan-audit-readonly.js
-          echo "REMOTE_V3_ORPHAN_AUDIT_BRANCH=PASS"
+          test "$GITHUB_REF_NAME" = "cleanup/remoteauth-v3-last-good-guarded-v1-20260923"
+          node --check src/wa-remoteauth-v3-last-good-cleanup-guarded.js
+          case "$LAST_GOOD_CLEANUP_MODE" in
+            preflight) ;;
+            cleanup)
+              test "$LAST_GOOD_CLEANUP_CONFIRM" = "Delete-52-LAST_GOOD-Orphans"
+              [[ "$LAST_GOOD_EXPECTED_ORPHAN_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]]
+              [[ "$LAST_GOOD_EXPECTED_VALID_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]]
+              ;;
+            *) exit 42 ;;
+          esac
+          echo "LAST_GOOD_CLEANUP_BRANCH_GUARD=PASS"
           echo "NO_WHATSAPP_MESSAGE_WILL_BE_SENT=YES"
-          echo "NO_GRIDFS_CHUNKS_WILL_BE_DELETED=YES"
-          node src/wa-remoteauth-v3-orphan-audit-readonly.js \
-            2>&1 | tee remote-v3-orphan-audit.log
-          grep -Fxq 'REMOTE_V3_ORPHAN_AUDIT=PASS' remote-v3-orphan-audit.log
-          grep -Fxq 'REMOTE_V3_ORPHAN_DELETED_COUNT=0' remote-v3-orphan-audit.log
-          grep -Fxq 'REMOTE_V3_ORPHAN_AUDIT_ACTIVE_BUCKET_ACCESSED=NO' remote-v3-orphan-audit.log
+          node src/wa-remoteauth-v3-last-good-cleanup-guarded.js \
+            2>&1 | tee last-good-cleanup.log
+          grep -Fxq 'CANDIDATE_PRESERVED_GUARD=PASS' last-good-cleanup.log
+          grep -Fxq 'LAST_GOOD_VALID_FILE_CONTENT_GUARD=PASS' last-good-cleanup.log
+          grep -Fxq 'ACTIVE_BUCKET_READ_OR_WRITE=NO' last-good-cleanup.log
+          grep -Fxq 'MESSAGE_SENT=NO' last-good-cleanup.log
+          if [ "$LAST_GOOD_CLEANUP_MODE" = preflight ]; then
+            grep -Fxq 'LAST_GOOD_PREFLIGHT=PASS' last-good-cleanup.log
+            grep -Fxq 'LAST_GOOD_BACKUP_WRITES=0' last-good-cleanup.log
+            grep -Fxq 'LAST_GOOD_CHUNKS_DELETED=0' last-good-cleanup.log
+          else
+            grep -Fxq 'LAST_GOOD_BACKUP_READBACK=PASS' last-good-cleanup.log
+            grep -Fxq 'LAST_GOOD_CHUNKS_DELETED=52' last-good-cleanup.log
+            grep -Fxq 'LAST_GOOD_POSTCHECK_VALID_CHUNKS=92' last-good-cleanup.log
+            grep -Fxq 'LAST_GOOD_POSTCHECK_ORPHAN_CHUNKS=0' last-good-cleanup.log
+            grep -Fxq 'LAST_GOOD_GUARDED_CLEANUP=PASS' last-good-cleanup.log
+          fi
+          echo "LAST_GOOD_CLEANUP_WORKFLOW=PASS"
 
-      - name: Remove ephemeral orphan audit log
+      - name: Remove ephemeral LAST_GOOD cleanup log
         if: always()
         shell: bash
         run: |
-          rm -f remote-v3-orphan-audit.log
-          echo "REMOTE_V3_ORPHAN_AUDIT_LOG_REMOVED=YES"
+          rm -f last-good-cleanup.log
+          echo "LAST_GOOD_CLEANUP_LOG_REMOVED=YES"
 
       - name: Remove temporary Atlas runner IP
         if: always()
