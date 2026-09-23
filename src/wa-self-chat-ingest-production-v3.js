@@ -45,6 +45,14 @@ let readyPipelineStarted = false;
 const syncOnceMode =
   process.argv.includes('--sync-once');
 
+// PALELU_DIAGNOSTIC_ONLY_V1: fetch metadata; no attendance writes/send.
+const diagnosticOnlyMode =
+  process.argv.includes('--diagnostic-only');
+
+if (diagnosticOnlyMode && syncOnceMode) {
+  throw new Error('DIAGNOSTIC_AND_SYNC_ONCE_MUTUALLY_EXCLUSIVE');
+}
+
 let inputGroupId = null;
 const processedMessageIds = new Set();
 
@@ -740,7 +748,9 @@ async function startupCatchupPalelu() {
     }
 
     relevantCount += 1;
-    await handleMessage(message);
+    if (!diagnosticOnlyMode) {
+      await handleMessage(message);
+    }
   }
 
   console.log('PALELU_CATCHUP_CHAT_COUNT=1');
@@ -1010,13 +1020,17 @@ async function main() {
     'MONGODB_PING=PASS'
   );
 
-  await ensureAttendanceIndexes(
-    mongoose.connection
-  );
+  if (!diagnosticOnlyMode) {
+    await ensureAttendanceIndexes(
+      mongoose.connection
+    );
 
-  console.log(
-    'ATTENDANCE_INDEX_READY=YES'
-  );
+    console.log(
+      'ATTENDANCE_INDEX_READY=YES'
+    );
+  } else {
+    console.log('PALELU_DIAG_ATTENDANCE_DB_WRITES=DISABLED');
+  }
 
   const remoteDataPath =
     getRemoteAuthDataPath();
@@ -1029,6 +1043,18 @@ async function main() {
 
   const remoteStore =
     remoteV3.store;
+
+  if (diagnosticOnlyMode) {
+    // Do not fall back to self-healing the active session in diagnostic.
+    await remoteStore.verifyActiveSnapshot();
+    remoteStore.save = async () => {
+      console.log('PALELU_DIAG_REMOTE_AUTH_SAVE=SKIPPED');
+    };
+    remoteStore.delete = async () => {
+      throw new Error('PALELU_DIAG_REMOTE_AUTH_DELETE_FORBIDDEN');
+    };
+    console.log('PALELU_DIAG_REMOTE_AUTH_WRITE=DISABLED');
+  }
 
   console.log(
     'AUTH_MODE=REMOTE'
@@ -1100,6 +1126,14 @@ async function main() {
 
       await startupCatchupPaleluStable();
 
+      if (diagnosticOnlyMode) {
+        console.log('PALELU_DIAG_FETCH_COMPLETE=YES');
+        console.log('MESSAGE_SENT=NO');
+        await shutdown('DIAGNOSTIC_ONLY_COMPLETE');
+        process.exit(0);
+        return;
+      }
+
       if (syncOnceMode) {
         console.log(
           'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS'
@@ -1125,6 +1159,14 @@ async function main() {
         `LISTENER_READY_ERROR=${error.message}`
       );
 
+      if (diagnosticOnlyMode) {
+        console.error('PALELU_DIAG_FETCH_COMPLETE=NO');
+        console.log('MESSAGE_SENT=NO');
+        await shutdown('DIAGNOSTIC_ONLY_ERROR');
+        process.exit(1);
+        return;
+      }
+
       if (syncOnceMode) {
         console.error(
           'ATTENDANCE_SYNC_ONCE=FAIL'
@@ -1141,6 +1183,7 @@ async function main() {
     }
   });
 
+  if (!diagnosticOnlyMode) {
   client.on(
     'message_create',
     message => {
@@ -1156,6 +1199,7 @@ async function main() {
           });
     }
   );
+  }
 
   client.on(
     'disconnected',
