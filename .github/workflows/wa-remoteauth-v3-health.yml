@@ -1,14 +1,33 @@
 name: WA RemoteAuth V3 Health
 
-# AUDIT BRANCH ONLY: historical orphan inventory, no WhatsApp or DB write.
+# CLEANUP BRANCH ONLY: Candidate fingerprint preflight before guarded deletion.
+# main branch retains the original RemoteAuth V3 Health workflow.
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Preflight read-only first; cleanup only after reviewing fingerprint
+        required: true
+        type: choice
+        options:
+          - preflight
+          - cleanup
+        default: preflight
+      expected_fingerprint:
+        description: For cleanup ONLY - exact 64-character preflight fingerprint
+        required: false
+        type: string
+      confirm:
+        description: For cleanup ONLY - type Delete-261-Candidate-Orphans
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: wa-remoteauth-v3-health
+  # Block parallel main production attendance flows while Candidate is inspected.
+  group: wa-attendance-production-cloud
   cancel-in-progress: false
 
 jobs:
@@ -241,27 +260,47 @@ jobs:
 
           echo "ATLAS_IP_ACTIVATION=PASS"
           echo "ATLAS_DYNAMIC_IP_READY=YES"
-      - name: Audit historical Candidate and LAST_GOOD orphan chunks read only
+      - name: Guarded Candidate orphan preflight or cleanup
         shell: bash
+        env:
+          CANDIDATE_CLEANUP_MODE: ${{ inputs.mode }}
+          CANDIDATE_EXPECTED_FINGERPRINT: ${{ inputs.expected_fingerprint }}
+          CANDIDATE_CLEANUP_CONFIRM: ${{ inputs.confirm }}
         run: |
           set -Eeuo pipefail
-          test "$GITHUB_REF_NAME" = "audit/remoteauth-v3-orphans-readonly-20260923"
-          node --check src/wa-remoteauth-v3-orphan-audit-readonly.js
-          echo "REMOTE_V3_ORPHAN_AUDIT_BRANCH=PASS"
+          test "$GITHUB_REF_NAME" = "cleanup/remoteauth-v3-candidate-guarded-v1-20260923"
+          node --check src/wa-remoteauth-v3-candidate-cleanup-guarded.js
+          test "$CANDIDATE_CLEANUP_MODE" = preflight -o "$CANDIDATE_CLEANUP_MODE" = cleanup
+          if [ "$CANDIDATE_CLEANUP_MODE" = cleanup ]; then
+            test "$CANDIDATE_CLEANUP_CONFIRM" = "Delete-261-Candidate-Orphans"
+            [[ "$CANDIDATE_EXPECTED_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]]
+          fi
+          echo "CANDIDATE_CLEANUP_BRANCH_GUARD=PASS"
+          echo "CANDIDATE_BACKUP_IS_IN_MONGODB_NOT_PUBLIC_ARTIFACT=YES"
           echo "NO_WHATSAPP_MESSAGE_WILL_BE_SENT=YES"
-          echo "NO_GRIDFS_CHUNKS_WILL_BE_DELETED=YES"
-          node src/wa-remoteauth-v3-orphan-audit-readonly.js \
-            2>&1 | tee remote-v3-orphan-audit.log
-          grep -Fxq 'REMOTE_V3_ORPHAN_AUDIT=PASS' remote-v3-orphan-audit.log
-          grep -Fxq 'REMOTE_V3_ORPHAN_DELETED_COUNT=0' remote-v3-orphan-audit.log
-          grep -Fxq 'REMOTE_V3_ORPHAN_AUDIT_ACTIVE_BUCKET_ACCESSED=NO' remote-v3-orphan-audit.log
+          node src/wa-remoteauth-v3-candidate-cleanup-guarded.js \
+            2>&1 | tee candidate-cleanup.log
+          grep -Fxq 'LAST_GOOD_READONLY_GUARD=PASS' candidate-cleanup.log
+          grep -Fxq 'ACTIVE_BUCKET_READ_OR_WRITE=NO' candidate-cleanup.log
+          grep -Fxq 'MESSAGE_SENT=NO' candidate-cleanup.log
+          if [ "$CANDIDATE_CLEANUP_MODE" = preflight ]; then
+            grep -Fxq 'CANDIDATE_PREFLIGHT=PASS' candidate-cleanup.log
+            grep -Fxq 'CANDIDATE_CHUNKS_DELETED=0' candidate-cleanup.log
+            grep -Fxq 'CANDIDATE_BACKUP_WRITES=0' candidate-cleanup.log
+          else
+            grep -Fxq 'CANDIDATE_BACKUP_READBACK=PASS' candidate-cleanup.log
+            grep -Fxq 'CANDIDATE_CHUNKS_DELETED=261' candidate-cleanup.log
+            grep -Fxq 'CANDIDATE_GUARDED_CLEANUP=PASS' candidate-cleanup.log
+            grep -Fxq 'CANDIDATE_BACKUP_PRESERVED=YES' candidate-cleanup.log
+          fi
+          echo "CANDIDATE_CLEANUP_WORKFLOW=PASS"
 
-      - name: Remove ephemeral orphan audit log
+      - name: Remove ephemeral Candidate cleanup log
         if: always()
         shell: bash
         run: |
-          rm -f remote-v3-orphan-audit.log
-          echo "REMOTE_V3_ORPHAN_AUDIT_LOG_REMOVED=YES"
+          rm -f candidate-cleanup.log
+          echo "CANDIDATE_CLEANUP_LOG_REMOVED=YES"
 
       - name: Remove temporary Atlas runner IP
         if: always()
