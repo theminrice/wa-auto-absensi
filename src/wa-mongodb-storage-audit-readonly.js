@@ -111,6 +111,187 @@ async function atlasTier() {
   }
 }
 
+// WA_MONGO_STORAGE_BREAKDOWN_READONLY_V2
+// Compare per-database and per-collection logical data+index metrics.
+// These counters are not a forecast of future usage or recoverable bytes.
+async function auditBreakdown(connection, atlasBytes) {
+  const db = connection.db;
+  const names = await db.listCollections(
+    {}, { nameOnly: true }
+  ).toArray();
+
+  console.log('MONGO_BREAKDOWN_APP_COLLECTION_COUNT=' + names.length);
+  let measuredBytes = 0;
+  let measuredCollections = 0;
+  let failedCollections = 0;
+
+  for (const { name } of names.sort((a, b) =>
+    a.name.localeCompare(b.name))) {
+    if (typeof name !== 'string' || !name) continue;
+
+    try {
+      const result = await db.command({
+        collStats: name,
+        scale: 1,
+        maxTimeMS: 20000
+      });
+      const data = numberOf(result.size);
+      const index = numberOf(result.totalIndexSize);
+      const docs = numberOf(result.count);
+      if (data === null || index === null) {
+        console.log('MONGO_BREAKDOWN_COLLECTION=' + name +
+          ' STATUS=UNKNOWN_METRIC');
+        failedCollections += 1;
+        continue;
+      }
+      measuredCollections += 1;
+      measuredBytes += data + index;
+      console.log('MONGO_BREAKDOWN_COLLECTION=' + name +
+        ' DATA_MIB=' + mib(data) +
+        ' INDEX_MIB=' + mib(index) +
+        ' LOGICAL_MIB=' + mib(data + index) +
+        ' DOCUMENTS=' + (docs === null ? 'UNKNOWN' : docs));
+    } catch (_) {
+      failedCollections += 1;
+      console.log('MONGO_BREAKDOWN_COLLECTION=' + name +
+        ' STATUS=METRICS_UNAVAILABLE');
+    }
+  }
+  console.log('MONGO_BREAKDOWN_COLLECTION_METRICS_PASS=' +
+    measuredCollections);
+  console.log('MONGO_BREAKDOWN_COLLECTION_METRICS_UNAVAILABLE=' +
+    failedCollections);
+  if (failedCollections === 0) {
+    console.log('MONGO_BREAKDOWN_APP_COLLECTIONS_LOGICAL_MIB=' +
+      mib(measuredBytes));
+  }
+
+  // GridFS file length measures saved ZIP payload size, distinct from
+  // the MongoDB data+index quota consumed by GridFS chunks/metadata.
+  const bucketBase = 'whatsapp-RemoteAuth-wa-auto-absensi-remote-v3';
+  for (const [label, suffix] of [
+    ['ACTIVE', ''],
+    ['CANDIDATE', '-candidate'],
+    ['LAST_GOOD', '-last-good']
+  ]) {
+    const name = bucketBase + suffix + '.files';
+    const exists = names.some(item => item.name === name);
+    if (!exists) {
+      console.log('MONGO_BREAKDOWN_SNAPSHOT_' + label +
+        '_FILES_COLLECTION=ABSENT');
+      continue;
+    }
+    try {
+      const summary = await db.collection(name).aggregate([
+        {
+          $group: {
+            _id: null,
+            files: { $sum: 1 },
+            payloadBytes: { $sum: '$length' }
+          }
+        }
+      ], { maxTimeMS: 20000 }).toArray();
+      const row = summary[0] || { files: 0, payloadBytes: 0 };
+      const bytes = numberOf(row.payloadBytes);
+      console.log('MONGO_BREAKDOWN_SNAPSHOT_' + label +
+        '_FILES=' + row.files);
+      console.log('MONGO_BREAKDOWN_SNAPSHOT_' + label +
+        '_ZIP_MIB=' +
+        (bytes === null ? 'UNKNOWN' : mib(bytes)));
+    } catch (_) {
+      console.log('MONGO_BREAKDOWN_SNAPSHOT_' + label +
+        '_ZIP_MIB=UNAVAILABLE');
+    }
+  }
+
+  // Backup chunk payloads: read aggregate only; never download,
+  // transfer, restore or delete backup documents.
+  for (const [label, name] of BACKUPS) {
+    if (!names.some(item => item.name === name)) continue;
+    try {
+      const result = await db.collection(name).aggregate([
+        {
+          $group: {
+            _id: null,
+            chunks: { $sum: 1 },
+            payloadBytes: {
+              $sum: { $binarySize: '$data' }
+            }
+          }
+        }
+      ], { maxTimeMS: 30000 }).toArray();
+      const row = result[0] || { chunks: 0, payloadBytes: 0 };
+      const bytes = numberOf(row.payloadBytes);
+      console.log('MONGO_BREAKDOWN_BACKUP_' + label +
+        '_PAYLOAD_MIB=' +
+        (bytes === null ? 'UNKNOWN' : mib(bytes)));
+      console.log('MONGO_BREAKDOWN_BACKUP_' + label +
+        '_PAYLOAD_CHUNKS=' + row.chunks);
+    } catch (_) {
+      console.log('MONGO_BREAKDOWN_BACKUP_' + label +
+        '_PAYLOAD_MIB=UNAVAILABLE');
+    }
+  }
+
+  let otherDbTotal = 0;
+  let otherDbComplete = true;
+  try {
+    const listing = await db.admin().command({
+      listDatabases: 1,
+      nameOnly: true,
+      authorizedDatabases: true
+    });
+    const databases = Array.isArray(listing.databases)
+      ? listing.databases : [];
+    console.log('MONGO_BREAKDOWN_ACCESSIBLE_DATABASES=' +
+      databases.length);
+    for (const entry of databases) {
+      if (!entry || typeof entry.name !== 'string') continue;
+      // Do not confuse MongoDB internal databases with user data.
+      if (['admin', 'config', 'local'].includes(entry.name)) {
+        console.log('MONGO_BREAKDOWN_SYSTEM_DB=' +
+          entry.name + ' SKIPPED=YES');
+        continue;
+      }
+      try {
+        const stats = await connection.client
+          .db(entry.name)
+          .command({ dbStats: 1, scale: 1 });
+        const data = numberOf(stats.dataSize);
+        const index = numberOf(stats.indexSize);
+        if (data === null || index === null) {
+          otherDbComplete = false;
+          console.log('MONGO_BREAKDOWN_DATABASE=' +
+            entry.name + ' STATUS=UNKNOWN_METRIC');
+          continue;
+        }
+        console.log('MONGO_BREAKDOWN_DATABASE=' +
+          entry.name + ' DATA_MIB=' + mib(data) +
+          ' INDEX_MIB=' + mib(index) +
+          ' LOGICAL_MIB=' + mib(data + index));
+        if (entry.name !== APP_DATABASE) {
+          otherDbTotal += data + index;
+        }
+      } catch (_) {
+        otherDbComplete = false;
+        console.log('MONGO_BREAKDOWN_DATABASE=' +
+          entry.name + ' STATUS=METRICS_UNAVAILABLE');
+      }
+    }
+    if (otherDbComplete) {
+      console.log('MONGO_BREAKDOWN_OTHER_DATABASES_LOGICAL_MIB=' +
+        mib(otherDbTotal));
+    }
+    if (atlasBytes !== null && otherDbComplete) {
+      console.log('MONGO_BREAKDOWN_CLUSTER_METRICS_RECONCILIATION=' +
+        'SEE_DB_STATS_AND_ATLAS_SIZE_SAME_RUN');
+    }
+  } catch (_) {
+    console.log('MONGO_BREAKDOWN_DATABASE_LIST=UNAVAILABLE');
+  }
+  console.log('MONGO_BREAKDOWN_AUDIT=PASS');
+}
+
 async function audit() {
   if (!process.env.MONGODB_URI) fail('MONGODB_URI_MISSING');
   console.log('MONGO_STORAGE_AUDIT=READ_ONLY');
@@ -187,6 +368,8 @@ async function audit() {
           '_CHUNKS=ABSENT');
       }
     }
+
+    await auditBreakdown(mongoose.connection, totalAtlasBytes);
 
     const tier = await atlasTier();
     if (tier === 'M0' && totalAtlasBytes !== null) {
