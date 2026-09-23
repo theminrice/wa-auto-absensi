@@ -670,6 +670,11 @@ async function startupCatchupPalelu() {
   const messages =
     await chat.fetchMessages({ limit: 50 });
 
+  // PALELU_CATCHUP_DIAGNOSTIC_V1: metadata only; no chat content or IDs.
+  console.log('PALELU_DIAG_FETCH_LIMIT=50');
+  console.log('PALELU_DIAG_FETCHED_COUNT=' +
+    (Array.isArray(messages) ? messages.length : 'INVALID'));
+
   if (!Array.isArray(messages)) {
     throw new Error('PALELU_CATCHUP_MESSAGES_INVALID');
   }
@@ -681,11 +686,14 @@ async function startupCatchupPalelu() {
 
   const seenMessageIds = new Set();
   let relevantCount = 0;
+  let diagnosticPosition = 0;
 
   for (const message of messages) {
+    diagnosticPosition += 1;
     const messageId = getMessageId(message);
 
     if (messageId && seenMessageIds.has(messageId)) {
+      console.log('PALELU_DIAG_DUPLICATE_POSITION=' + diagnosticPosition);
       continue;
     }
 
@@ -695,6 +703,19 @@ async function startupCatchupPalelu() {
 
     const allowed =
       await isPaleluMessage(message, inputGroupId);
+
+    // Metadata only: never log message text, chat IDs or media bytes.
+    console.log('PALELU_DIAG_MESSAGE=' + JSON.stringify({
+      position: diagnosticPosition,
+      timestamp: Number(message && message.timestamp || 0),
+      fromMe: message && message.fromMe === true,
+      type: message && message.type || null,
+      hasMedia: message && message.hasMedia === true,
+      captionIsP: typeof (message && message.body) === 'string' &&
+        message.body.trim().toLowerCase() === 'p',
+      messageIdPresent: Boolean(messageId),
+      groupAllowed: allowed
+    }));
 
     if (!allowed) {
       continue;
@@ -707,6 +728,12 @@ async function startupCatchupPalelu() {
     );
     const documentation =
       isDocumentationImage(message);
+
+    console.log('PALELU_DIAG_CLASSIFICATION=' + JSON.stringify({
+      position: diagnosticPosition,
+      kind: project ? 'project' : leave ? 'leave' :
+        documentation ? 'documentation' : 'none'
+    }));
 
     if (!project && !leave && !documentation) {
       continue;
