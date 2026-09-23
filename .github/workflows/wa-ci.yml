@@ -61,6 +61,7 @@ jobs:
           node --check src/remote-auth-v3.js
           node --check src/wa-remote-auth-v3-bootstrap.js
           node --check src/wa-remote-auth-v3-health.js
+          node --check src/wa-mongodb-storage-audit-readonly.js
           node --check src/wa-remote-auth-v3-seed-last-good.js
           node --check src/wa-self-chat-ingest-production-v3.js
           node --check src/wa-send-checkout-v3-proof-testing.js
@@ -69,6 +70,30 @@ jobs:
           node --check src/wa-live-self-chat-input-proof-v3.js
           node --check src/wa-attendance-canonical-guard.js
           echo "SOURCE_SYNTAX=PASS"
+
+      - name: Verify MongoDB Atlas storage audit is read only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          AUDIT=src/wa-mongodb-storage-audit-readonly.js
+          WF=.github/workflows/wa-remoteauth-v3-health.yml
+          grep -Fq 'WA_MONGO_ATLAS_STORAGE_READONLY_AUDIT_V1' "$AUDIT"
+          grep -Fq 'atlasSize: 1' "$AUDIT"
+          grep -Fq 'dbStats: 1' "$AUDIT"
+          grep -Fq 'MONGO_STORAGE_AUDIT=PASS' "$AUDIT"
+          grep -Fq 'MONGO_STORAGE_DB_WRITES=0' "$AUDIT"
+          grep -Fq 'MONGO_STORAGE_WHATSAPP_INITIALIZED=NO' "$AUDIT"
+          grep -Fq 'audit/mongodb-atlas-storage-readonly-20260923' "$WF"
+          grep -Fq 'NO_MONGODB_DATA_WILL_BE_MODIFIED=YES' "$WF"
+          if grep -Eq '\\.(insertOne|insertMany|updateOne|updateMany|deleteOne|deleteMany|replaceOne|drop|bulkWrite|createCollection)\\(' "$AUDIT"; then
+            echo 'MONGO_STORAGE_UNSAFE_DB_WRITE_FOUND=YES'
+            exit 48
+          fi
+          if grep -Eq 'sendMessage\\(|new Client\\(|client\\.initialize\\(' "$AUDIT"; then
+            echo 'MONGO_STORAGE_WHATSAPP_USE_FOUND=YES'
+            exit 49
+          fi
+          echo 'MONGO_STORAGE_READONLY_STATIC_GUARD=PASS'
 
       - name: Verify RemoteAuth V3 no-send guards
         shell: bash
