@@ -293,6 +293,28 @@ if (process.env.MONGODB_URI) {
 }
 
   try {
+    // WA_AUTO_ABSENSI_ONE_SESSION_PROOF_TESTING_V1
+    // Only opt-in test sender, immutable EXPECTED_GROUP_NAME='Testing'.
+    if (process.env.ATTENDANCE_ONE_SESSION_CANDIDATE === 'YES') {
+      if (!useRemoteAuth || EXPECTED_GROUP_NAME !== 'Testing') {
+        throw new Error('ONE_SESSION_TESTING_TARGET_GUARD');
+      }
+
+      console.log('ONE_SESSION_TESTING_CANDIDATE=ENABLED');
+
+      const {
+        syncPaleluWithClient
+      } = require('./wa-self-chat-ingest-production-v3');
+
+      // No extra Client, no fresh RemoteAuth restore, no extra settle.
+      // Fail before SEND_START if Palelu catchup cannot complete.
+      await syncPaleluWithClient(client);
+
+      console.log('ONE_SESSION_TESTING_CLIENT_REUSED=YES');
+    } else {
+      console.log('ONE_SESSION_TESTING_CANDIDATE=DISABLED');
+    }
+
     console.log('TARGET_GROUP_VERIFY_START=YES');
 
     const chats = await timeout(

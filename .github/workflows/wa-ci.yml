@@ -37,6 +37,7 @@ jobs:
           npm test
           node src/attendance-leave-store.test.js
           node src/attendance-input-group.test.js
+          node src/attendance-one-session-candidate.test.js
 
       - name: Verify WhatsApp dependencies load
         run: |
@@ -50,6 +51,7 @@ jobs:
           node --check src/attendance-leave-store.test.js
           node --check src/attendance-input-group.js
           node --check src/attendance-input-group.test.js
+          node --check src/attendance-one-session-candidate.test.js
           node --check src/duplicate-guard.js
           node --check src/wa-capture-testing.js
           node --check src/wa-read-project.js

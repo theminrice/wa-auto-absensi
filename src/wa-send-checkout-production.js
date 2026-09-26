@@ -1966,6 +1966,28 @@ if (process.env.MONGODB_URI) {
 }
 
   try {
+    // WA_AUTO_ABSENSI_ONE_SESSION_CANDIDATE_V1
+    // OFF by default; existing production workflow keeps its baseline.
+    if (process.env.ATTENDANCE_ONE_SESSION_CANDIDATE === 'YES') {
+      if (!useRemoteAuth) {
+        throw new Error('ONE_SESSION_REMOTE_AUTH_REQUIRED');
+      }
+
+      console.log('ONE_SESSION_CANDIDATE=ENABLED');
+
+      const {
+        syncPaleluWithClient
+      } = require('./wa-self-chat-ingest-production-v3');
+
+      // The sender owns this Client/RemoteAuth session and MongoDB
+      // connection. A failed catchup aborts before SEND_START.
+      await syncPaleluWithClient(client);
+
+      console.log('ONE_SESSION_REUSED_WHATSAPP_CLIENT=YES');
+    } else {
+      console.log('ONE_SESSION_CANDIDATE=DISABLED');
+    }
+
 
     // ========================================================
     // 1. VERIFY TARGET = TESTING
