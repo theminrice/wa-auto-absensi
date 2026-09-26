@@ -63,6 +63,8 @@ jobs:
           node --check src/wa-remote-auth-v3-health.js
           node --check src/wa-remote-auth-v3-seed-last-good.js
           node --check src/wa-self-chat-ingest-production-v3.js
+          node --check src/attendance-sync-startup-retry.js
+          node --check src/wa-sync-once-production-v3-resilient.js
           node --check src/wa-send-checkout-v3-proof-testing.js
           node --check src/wa-send-checkin-v3-proof-testing.js
           node --check src/wa-input-parser-v3-proof.js
@@ -117,6 +119,152 @@ jobs:
 
           echo "REMOTE_V3_SEND_CALL_FOUND=NO"
           echo "REMOTE_V3_STATIC_GUARD=PASS"
+
+      - name: Verify Production V3 sync startup retry guards
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          node - <<'NODE'
+          const {
+            isRetryableStartupFailure
+          } = require('./src/attendance-sync-startup-retry');
+
+          function expect(name, actual, expected) {
+            if (actual !== expected) {
+              throw new Error(
+                name + ': expected ' + expected +
+                ', got ' + actual
+              );
+            }
+            console.log(name + '=PASS');
+          }
+
+          const timeout =
+            'LISTENER_STARTUP_ERROR=Waiting failed: 30000ms exceeded';
+
+          expect(
+            'SYNC_RETRY_EXACT_TRANSIENT',
+            isRetryableStartupFailure({
+              exitCode: 1,
+              output: timeout
+            }),
+            true
+          );
+
+          expect(
+            'SYNC_RETRY_SUCCESS_NEVER',
+            isRetryableStartupFailure({
+              exitCode: 0,
+              output: timeout
+            }),
+            false
+          );
+
+          expect(
+            'SYNC_RETRY_AFTER_READY_NEVER',
+            isRetryableStartupFailure({
+              exitCode: 1,
+              output:
+                'WHATSAPP_READY=YES\n' + timeout
+            }),
+            false
+          );
+
+          expect(
+            'SYNC_RETRY_QR_NEVER',
+            isRetryableStartupFailure({
+              exitCode: 1,
+              output:
+                'REMOTE_AUTH_QR_FORBIDDEN=YES\n' +
+                timeout
+            }),
+            false
+          );
+
+          expect(
+            'SYNC_RETRY_OTHER_FAILURE_NEVER',
+            isRetryableStartupFailure({
+              exitCode: 1,
+              output:
+                'LISTENER_STARTUP_ERROR=some other failure'
+            }),
+            false
+          );
+          NODE
+
+          grep -Fq 'MAX_ATTEMPTS = 2'             src/wa-sync-once-production-v3-resilient.js
+          grep -Fq 'PRODUCTION_V3_SYNC_SENDER_RETRY=NO'             src/wa-sync-once-production-v3-resilient.js
+          grep -Fq 'PRODUCTION_V3_SYNC_RETRY_COUNT=1_OF_1'             src/wa-sync-once-production-v3-resilient.js
+          grep -Fq             'attendance:sync-once-production-v3-resilient'             package.json
+          grep -Fq             'attendance:sync-once-production-v3-resilient'             .github/workflows/wa-attendance-production-v1.yml
+          grep -Fq             'attendance:sync-once-production-v3-resilient'             .github/workflows/wa-production-v3-e2e-proof-testing.yml
+
+          if grep -Fq 'sendMessage('             src/wa-sync-once-production-v3-resilient.js             src/attendance-sync-startup-retry.js
+          then
+            echo 'SYNC_RETRY_WRAPPER_SEND_CALL=YES'
+            exit 46
+          fi
+
+          echo 'SYNC_RETRY_WRAPPER_SEND_CALL=NO'
+          echo 'PRODUCTION_V3_SYNC_STARTUP_RETRY_STATIC_GUARD=PASS'
+
+          grep -Fq \
+            'WA_REMOTE_V3_DIRECT_SOURCE_PROMOTION_V1' \
+            src/remote-auth-v3.js
+
+          grep -Fq \
+            'path:' \
+            src/remote-auth-v3.js
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const source =
+            fs.readFileSync(
+              'src/remote-auth-v3.js',
+              'utf8'
+            );
+
+          const marker =
+            source.indexOf(
+              'WA_REMOTE_V3_DIRECT_SOURCE_PROMOTION_V1'
+            );
+
+          if (marker < 0) {
+            throw new Error(
+              'DIRECT_SOURCE_PROMOTION_MARKER_MISSING'
+            );
+          }
+
+          const windowText =
+            source.slice(
+              marker,
+              marker + 1800
+            );
+
+          if (!windowText.includes('path:\n        sourceZip')) {
+            throw new Error(
+              'DIRECT_SOURCE_PROMOTION_PATH_MISSING'
+            );
+          }
+
+          if (
+            windowText.includes(
+              'copyFile(\n      sourceZip'
+            ) ||
+            windowText.includes(
+              'targetLocalZip'
+            )
+          ) {
+            throw new Error(
+              'LIVE_ACTIVE_ZIP_STAGING_STILL_PRESENT'
+            );
+          }
+
+          console.log(
+            'REMOTE_V3_DIRECT_SOURCE_PROMOTION_STATIC_GUARD=PASS'
+          );
+          NODE
 
       - name: Verify Production RemoteAuth V3 cutover guards
         shell: bash

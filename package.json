@@ -23,7 +23,8 @@
     "wa:send-checkin-v3-proof-testing": "node src/wa-send-checkin-v3-proof-testing.js",
     "wa:input-parser-v3-proof": "node src/wa-input-parser-v3-proof.js",
     "wa:live-self-chat-input-proof-v3": "node src/wa-live-self-chat-input-proof-v3.js",
-    "wa:attendance-canonical-guard": "node src/wa-attendance-canonical-guard.js"
+    "wa:attendance-canonical-guard": "node src/wa-attendance-canonical-guard.js",
+    "attendance:sync-once-production-v3-resilient": "node src/wa-sync-once-production-v3-resilient.js"
   },
   "engines": {
     "node": ">=20"
