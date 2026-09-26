@@ -58,6 +58,7 @@ jobs:
           node --check src/wa-send-checkout-testing.js
           node --check src/wa-send-checkin-production.js
           node --check src/wa-send-checkout-production.js
+          node --check src/attendance-input-store.js
           node --check src/remote-auth-v3.js
           node --check src/wa-remote-auth-v3-bootstrap.js
           node --check src/wa-remote-auth-v3-health.js
@@ -71,6 +72,58 @@ jobs:
           node --check src/wa-live-self-chat-input-proof-v3.js
           node --check src/wa-attendance-canonical-guard.js
           echo "SOURCE_SYNTAX=PASS"
+
+      - name: Verify Production Check Out latest available documentation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PROD=src/wa-send-checkout-production.js
+          STORE=src/attendance-input-store.js
+          grep -Fq 'WA_AUTO_ABSENSI_CHECKOUT_LATEST_AVAILABLE_DOCUMENTATION_V2' "$PROD"
+          grep -Fq 'WA_AUTO_ABSENSI_CHECKOUT_LATEST_AVAILABLE_DOCUMENTATION_V2' "$STORE"
+          grep -Fq 'DOC_IMAGE_SELECTION=LATEST_AVAILABLE_CANONICAL' "$PROD"
+          grep -Fq 'DOC_IMAGE_AGE_RESTRICTION=NONE' "$PROD"
+          grep -Fq 'REASON=NO_AVAILABLE_DOCUMENTATION' "$PROD"
+          grep -Fq 'return await finish(client, 33);' "$PROD"
+          node <<'NODE'
+          const assert = require('assert');
+          const fs = require('fs');
+          const src = fs.readFileSync(
+            'src/wa-send-checkout-production.js', 'utf8'
+          );
+          const unique = needle => {
+            const start = src.indexOf(needle);
+            if (start < 0 || src.indexOf(needle, start + needle.length) >= 0) {
+              throw new Error('DOC_SELECTION_MARKER_COUNT_INVALID_' + needle);
+            }
+            return start;
+          };
+          const latest = unique('getLatestDocumentation(');
+          const timestamp = unique('DOC_IMAGE_TIMESTAMP=');
+          const selected = unique('DOC_IMAGE_SELECTION=LATEST_AVAILABLE_CANONICAL');
+          const download = unique('DOWNLOAD_MEDIA_START=YES');
+          assert(latest < timestamp && timestamp < selected &&
+            selected < download, 'LATEST_DOC_SELECTION_ORDER_INVALID');
+          assert(
+            !src.includes('isCheckoutDocumentationCurrentDay') &&
+            !src.includes('getLatestDocumentationAfter(') &&
+            !src.includes('DOC_IMAGE_SAME_JAKARTA_DAY='),
+            'DAY_OR_PROJECT_AGE_RESTRICTION_REMAINS'
+          );
+          const store = require('./src/attendance-input-store');
+          const source = store.getLatestDocumentation.toString();
+          assert(
+            source.includes("kind: 'documentation'") &&
+            source.includes('createdAt: -1') &&
+            !source.includes('projectTimestamp') &&
+            !source.includes('$gte'),
+            'CANONICAL_LATEST_QUERY_CONTRACT_INVALID'
+          );
+          console.log('PRODUCTION_LATEST_DOC_SELECTION_ORDER=PASS');
+          NODE
+          echo 'PRODUCTION_CHECKOUT_LATEST_AVAILABLE_DOC_GUARD=PASS'
+          echo 'WHATSAPP_LOGIN=NO'
+          echo 'MESSAGE_SENT=NO'
 
       - name: Verify RemoteAuth V3 no-send guards
         shell: bash
