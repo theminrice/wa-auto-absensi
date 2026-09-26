@@ -277,34 +277,28 @@ function createHardenedRemoteAuthV3Store(
       `${label}_SOURCE`
     );
 
-    const targetLocalZip =
-      sessionZipPath(
-        resolvedDataPath,
-        targetSession
-      );
-
-    await fs.promises.mkdir(
-      resolvedDataPath,
-      {
-        recursive: true
-      }
-    );
-
-    await fs.promises.copyFile(
-      sourceZip,
-      targetLocalZip
-    );
-
-    try {
-      await original.save({
-        session:
-          targetSession
-      });
-    } finally {
-      await rmFile(
-        targetLocalZip
-      );
-    }
+    /*
+     * WA_REMOTE_V3_DIRECT_SOURCE_PROMOTION_V1
+     *
+     * Do not stage a promoted snapshot through
+     * <dataPath>/<active-session>.zip.
+     *
+     * RemoteAuth.compressSession() also writes that exact path
+     * before each periodic store.save(). A periodic backup can
+     * therefore overwrite/truncate the staging file while a
+     * candidate is being promoted, producing intermittent zlib
+     * errors such as "invalid stored block lengths".
+     *
+     * The compatibility store already supports options.path.
+     * Point it directly at this verified immutable snapshot so
+     * promotion never shares the live RemoteAuth zip pathname.
+     */
+    await original.save({
+      session:
+        targetSession,
+      path:
+        sourceZip
+    });
 
     const verified =
       await verifyStoredSnapshot(
