@@ -209,6 +209,63 @@ jobs:
           echo 'SYNC_RETRY_WRAPPER_SEND_CALL=NO'
           echo 'PRODUCTION_V3_SYNC_STARTUP_RETRY_STATIC_GUARD=PASS'
 
+          grep -Fq \
+            'WA_REMOTE_V3_DIRECT_SOURCE_PROMOTION_V1' \
+            src/remote-auth-v3.js
+
+          grep -Fq \
+            'path:' \
+            src/remote-auth-v3.js
+
+          node - <<'NODE'
+          const fs = require('fs');
+          const source =
+            fs.readFileSync(
+              'src/remote-auth-v3.js',
+              'utf8'
+            );
+
+          const marker =
+            source.indexOf(
+              'WA_REMOTE_V3_DIRECT_SOURCE_PROMOTION_V1'
+            );
+
+          if (marker < 0) {
+            throw new Error(
+              'DIRECT_SOURCE_PROMOTION_MARKER_MISSING'
+            );
+          }
+
+          const windowText =
+            source.slice(
+              marker,
+              marker + 1800
+            );
+
+          if (!windowText.includes('path:\n        sourceZip')) {
+            throw new Error(
+              'DIRECT_SOURCE_PROMOTION_PATH_MISSING'
+            );
+          }
+
+          if (
+            windowText.includes(
+              'copyFile(\n      sourceZip'
+            ) ||
+            windowText.includes(
+              'targetLocalZip'
+            )
+          ) {
+            throw new Error(
+              'LIVE_ACTIVE_ZIP_STAGING_STILL_PRESENT'
+            );
+          }
+
+          console.log(
+            'REMOTE_V3_DIRECT_SOURCE_PROMOTION_STATIC_GUARD=PASS'
+          );
+          NODE
+
       - name: Verify Production RemoteAuth V3 cutover guards
         shell: bash
         run: |
