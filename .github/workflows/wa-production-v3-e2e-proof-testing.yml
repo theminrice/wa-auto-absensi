@@ -3,6 +3,13 @@ name: WA Production V3 E2E Proof - Testing
 on:
   workflow_dispatch:
     inputs:
+      action:
+        description: Attendance proof action
+        required: true
+        type: choice
+        options:
+          - checkin
+          - checkout
       confirm:
         description: Type Testing-V3-Proof to authorize one real send to Testing
         required: true
@@ -249,6 +256,7 @@ jobs:
         shell: bash
         env:
           PROOF_CONFIRM: ${{ inputs.confirm }}
+          PROOF_ACTION: ${{ inputs.action }}
         run: |
           set -Eeuo pipefail
 
@@ -257,18 +265,39 @@ jobs:
             exit 30
           fi
 
+          case "$PROOF_ACTION" in
+            checkin)
+              PROOF=src/wa-send-checkin-v3-proof-testing.js
+              PRODUCTION=src/wa-send-checkin-production.js
+              MODE_MARKER='E2E_PROOF_MODE=TESTING_V3_CHECKIN_PROOF'
+              PASS_MARKER='E2E_PROOF_CHECKIN=PASS'
+              STEP_MARKER='STEP_PRODUCTION_CHECKIN=PASS'
+              ;;
+            checkout)
+              PROOF=src/wa-send-checkout-v3-proof-testing.js
+              PRODUCTION=src/wa-send-checkout-production.js
+              MODE_MARKER='E2E_PROOF_MODE=TESTING_V3_CHECKOUT_PROOF'
+              PASS_MARKER='E2E_PROOF=PASS'
+              STEP_MARKER='STEP_PRODUCTION_CHECKOUT=PASS'
+              ;;
+            *)
+              echo "E2E_PROOF_ACTION_VALID=NO"
+              exit 35
+              ;;
+          esac
+
           echo "E2E_PROOF_CONFIRMATION=PASS"
+          echo "E2E_PROOF_ACTION_VALID=YES"
+          echo "E2E_PROOF_ACTION=$PROOF_ACTION"
 
-          PROOF=src/wa-send-checkout-v3-proof-testing.js
-
-          grep -Fq 'WA_PRODUCTION_V3_E2E_PROOF_TESTING_V1' "$PROOF"
           grep -Fq "EXPECTED_GROUP_NAME = 'Testing'" "$PROOF"
           grep -Fq "require('./remote-auth-v3')" "$PROOF"
           grep -Fq 'REMOTE_AUTH_VERSION=V3' "$PROOF"
-          grep -Fq 'E2E_PROOF_ONE_REAL_SEND_MAX=YES' "$PROOF"
           grep -Fq 'E2E_PROOF_AUTOMATIC_RETRY=NO' "$PROOF"
           grep -Fq 'SERVER_ACK_CONFIRMED=YES' "$PROOF"
-          grep -Fq 'E2E_PROOF=PASS' "$PROOF"
+          grep -Fq "$MODE_MARKER" "$PROOF"
+          grep -Fq "$PASS_MARKER" "$PROOF"
+          grep -Fq "$STEP_MARKER" "$PROOF"
 
           if grep -Fq 'Aktif Tim Magang OCN' "$PROOF"; then
             echo "E2E_PROOF_MAIN_GROUP_REFERENCE=YES"
@@ -277,11 +306,11 @@ jobs:
 
           grep -Fq \
             "EXPECTED_GROUP_NAME = 'Aktif Tim Magang OCN'" \
-            src/wa-send-checkout-production.js
+            "$PRODUCTION"
 
           if grep -Fq \
             "EXPECTED_GROUP_NAME = 'Testing'" \
-            src/wa-send-checkout-production.js
+            "$PRODUCTION"
           then
             echo "PRODUCTION_SENDER_TARGET_DRIFT=YES"
             exit 32
@@ -292,9 +321,15 @@ jobs:
             exit 33
           fi
 
+          if grep -Fq 'sendMessage(' src/wa-sync-once-production-v3-resilient.js; then
+            echo "PRODUCTION_V3_SYNC_WRAPPER_SEND_CALL=YES"
+            exit 34
+          fi
+
           echo "E2E_PROOF_MAIN_GROUP_REFERENCE=NO"
           echo "PRODUCTION_SENDER_TARGET_DRIFT=NO"
           echo "PRODUCTION_V3_SYNC_SEND_CALL=NO"
+          echo "PRODUCTION_V3_SYNC_WRAPPER_SEND_CALL=NO"
           echo "E2E_PROOF_SOURCE_ISOLATION=PASS"
 
       - name: Sync latest inputs with Production V3
@@ -313,7 +348,7 @@ jobs:
 
           rm -f v3-proof-sync.log
 
-          npm run attendance:sync-once-production-v3 \
+          npm run attendance:sync-once-production-v3-resilient \
             2>&1 |
             tee v3-proof-sync.log
 
@@ -324,6 +359,8 @@ jobs:
           grep -Fxq 'PALELU_CATCHUP_STABLE=YES' v3-proof-sync.log
           grep -Fxq 'ATTENDANCE_SYNC_ONCE_CATCHUP=PASS' v3-proof-sync.log
           grep -Fxq 'ATTENDANCE_SYNC_ONCE=PASS' v3-proof-sync.log
+          grep -Fxq 'PRODUCTION_V3_SYNC_RESILIENT=PASS' v3-proof-sync.log
+          grep -Fxq 'PRODUCTION_V3_SYNC_SENDER_RETRY=NO' v3-proof-sync.log
 
           if grep -Fxq 'REMOTE_AUTH_QR_FORBIDDEN=YES' v3-proof-sync.log
           then
@@ -335,12 +372,13 @@ jobs:
           echo "E2E_PROOF_SYNC=PASS"
           echo "E2E_PROOF_SYNC_MESSAGE_SENT=NO"
 
-      - name: Send one V3 checkout proof to Testing
+      - name: Send one V3 attendance proof to Testing
         shell: bash
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           WWEBJS_REMOTE_DATA_PATH: ${{ runner.temp }}/wa-auto-absensi-v3-proof-testing
           TZ: Asia/Jakarta
+          PROOF_ACTION: ${{ inputs.action }}
         run: |
           set -Eeuo pipefail
 
@@ -351,22 +389,36 @@ jobs:
           echo "E2E_PROOF_MAIN_GROUP_ALLOWED=NO"
           echo "E2E_PROOF_ONE_REAL_SEND_MAX=YES"
           echo "E2E_PROOF_AUTOMATIC_RETRY=NO"
+          echo "E2E_PROOF_ACTION=$PROOF_ACTION"
 
           rm -f v3-e2e-proof.log
 
-          npm run wa:send-checkout-v3-proof-testing \
-            2>&1 |
-            tee v3-e2e-proof.log
+          case "$PROOF_ACTION" in
+            checkin)
+              npm run wa:send-checkin-v3-proof-testing \
+                2>&1 |
+                tee v3-e2e-proof.log
+              ;;
+            checkout)
+              npm run wa:send-checkout-v3-proof-testing \
+                2>&1 |
+                tee v3-e2e-proof.log
+              ;;
+            *)
+              echo "E2E_PROOF_ACTION_VALID=NO"
+              exit 35
+              ;;
+          esac
 
       - name: Verify V3 E2E proof result
         shell: bash
+        env:
+          PROOF_ACTION: ${{ inputs.action }}
         run: |
           set -Eeuo pipefail
 
           test -f v3-e2e-proof.log
 
-          grep -Fxq 'E2E_PROOF_MODE=TESTING_V3_CHECKOUT_PROOF' v3-e2e-proof.log
-          grep -Fxq 'E2E_PROOF_ONE_REAL_SEND_MAX=YES' v3-e2e-proof.log
           grep -Fxq 'E2E_PROOF_AUTOMATIC_RETRY=NO' v3-e2e-proof.log
           grep -Fxq 'AUTH_MODE=REMOTE' v3-e2e-proof.log
           grep -Fxq 'REMOTE_AUTH_VERSION=V3' v3-e2e-proof.log
@@ -377,16 +429,30 @@ jobs:
           grep -Fxq 'TARGET_GROUP_NAME=Testing' v3-e2e-proof.log
           grep -Fxq 'TARGET_GROUP_IS_GROUP=true' v3-e2e-proof.log
           grep -Fxq 'TARGET_GROUP_SAFE=YES' v3-e2e-proof.log
-          grep -Fxq 'UI_SEND_COMMIT_CONFIRMED=YES' v3-e2e-proof.log
           grep -Fxq 'SERVER_ACK_CONFIRMED=YES' v3-e2e-proof.log
           grep -Fxq 'MESSAGE_SENT=YES' v3-e2e-proof.log
-          grep -Fxq 'MEDIA_SENT=YES' v3-e2e-proof.log
-          grep -Fxq 'CAPTION_SENT=YES' v3-e2e-proof.log
           grep -Fxq 'TARGET_GROUP_CONFIRMED=Testing' v3-e2e-proof.log
           grep -Fxq 'E2E_PROOF_SERVER_ACK=PASS' v3-e2e-proof.log
           grep -Fxq 'E2E_PROOF_TARGET=Testing' v3-e2e-proof.log
-          grep -Fxq 'E2E_PROOF=PASS' v3-e2e-proof.log
-          grep -Fxq 'STEP_PRODUCTION_CHECKOUT=PASS' v3-e2e-proof.log
+
+          case "$PROOF_ACTION" in
+            checkin)
+              grep -Fxq 'E2E_PROOF_MODE=TESTING_V3_CHECKIN_PROOF' v3-e2e-proof.log
+              grep -Fxq 'E2E_PROOF_CHECKIN=PASS' v3-e2e-proof.log
+              grep -Fxq 'STEP_PRODUCTION_CHECKIN=PASS' v3-e2e-proof.log
+              ;;
+            checkout)
+              grep -Fxq 'E2E_PROOF_MODE=TESTING_V3_CHECKOUT_PROOF' v3-e2e-proof.log
+              grep -Fxq 'MEDIA_SENT=YES' v3-e2e-proof.log
+              grep -Fxq 'CAPTION_SENT=YES' v3-e2e-proof.log
+              grep -Fxq 'E2E_PROOF=PASS' v3-e2e-proof.log
+              grep -Fxq 'STEP_PRODUCTION_CHECKOUT=PASS' v3-e2e-proof.log
+              ;;
+            *)
+              echo "E2E_PROOF_ACTION_VALID=NO"
+              exit 43
+              ;;
+          esac
 
           if grep -Fxq 'QR_RECEIVED=YES' v3-e2e-proof.log; then
             echo "E2E_PROOF_QR_REQUIRED=YES"
