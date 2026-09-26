@@ -401,7 +401,7 @@ jobs:
 
           rm -f attendance-sync.log
 
-          npm run attendance:sync-once-production-v3 \
+          npm run attendance:sync-once-production-v3-resilient \
             2>&1 |
             tee attendance-sync.log
 
@@ -419,6 +419,14 @@ jobs:
 
           grep -Fxq \
             'ATTENDANCE_SYNC_ONCE=PASS' \
+            attendance-sync.log
+
+          grep -Fxq \
+            'PRODUCTION_V3_SYNC_RESILIENT=PASS' \
+            attendance-sync.log
+
+          grep -Fxq \
+            'PRODUCTION_V3_SYNC_SENDER_RETRY=NO' \
             attendance-sync.log
 
           echo "ATTENDANCE_SYNC_BEFORE_SEND=PASS"
